@@ -24,6 +24,6 @@ do
   sleep 1
 done
 
-sudo ip addr add 192.168.0.1/24 dev "$iface_name"
+sudo ip addr add 10.0.0.0/24 dev "$iface_name"
 sudo ip link set up dev "$iface_name"
 wait $pid
