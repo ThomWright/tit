@@ -1,3 +1,6 @@
+use etherparse::{IpHeader, IpTrafficClass};
+use std::net::IpAddr;
+
 /// Get the IP protocol type from the numberic identifier.
 pub fn ip_protocol(ip_protocol_number: u8) -> Option<etherparse::IpTrafficClass> {
   match ip_protocol_number {
@@ -147,4 +150,25 @@ pub fn ip_protocol(ip_protocol_number: u8) -> Option<etherparse::IpTrafficClass>
     254 => Some(etherparse::IpTrafficClass::ExperimentalAndTesting1),
     _ => None,
   }
+}
+
+pub fn get_ip_addresses(ip: &IpHeader) -> (IpAddr, IpAddr) {
+  match ip {
+    IpHeader::Version4(header) => (
+      IpAddr::from(header.source),
+      IpAddr::from(header.destination),
+    ),
+    IpHeader::Version6(header) => (
+      IpAddr::from(header.source),
+      IpAddr::from(header.destination),
+    ),
+  }
+}
+
+pub fn get_next_protocol(ip: &IpHeader) -> IpTrafficClass {
+  ip_protocol(match ip {
+    IpHeader::Version4(header) => header.protocol,
+    IpHeader::Version6(header) => header.next_header,
+  })
+  .expect("Unknown IP protocol number")
 }

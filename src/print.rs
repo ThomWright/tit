@@ -1,6 +1,8 @@
 use ansi_term::Colour;
 use etherparse;
-use etherparse::{InternetSlice, SlicedPacket, TcpHeaderSlice};
+use etherparse::{IpHeader, PacketHeaders, TcpHeader};
+
+use crate::ip_utils;
 
 // TODO: Would be nice to define these as `Style`s, not colours, and maybe to use unique styles
 const SRC_PORT: Colour = Colour::Red;
@@ -76,30 +78,30 @@ pub fn tcp_key() {
 /// TODO: we should look at the actual data in the header
 const RESERVED_VAL: u8 = 0;
 
-pub fn tcp_header(header: &TcpHeaderSlice) {
+pub fn tcp_header(header: &TcpHeader) {
   tcp_header_hex_line(&header);
   tcp_header_binary(&header);
 }
 
-pub fn tcp_header_binary(header: &TcpHeaderSlice) {
-  let bin_source_port = format!("{:016b}", header.source_port());
-  let bin_destination_port = format!("{:016b}", header.destination_port());
-  let bin_sequence_number = format!("{:032b}", header.sequence_number());
-  let bin_acknowledgment_number = format!("{:032b}", header.acknowledgment_number());
+pub fn tcp_header_binary(header: &TcpHeader) {
+  let bin_source_port = format!("{:016b}", header.source_port);
+  let bin_destination_port = format!("{:016b}", header.destination_port);
+  let bin_sequence_number = format!("{:032b}", header.sequence_number);
+  let bin_acknowledgment_number = format!("{:032b}", header.acknowledgment_number);
   let bin_data_offset = format!("{:04b}", header.data_offset());
   let bin_reserved = format!("{:03b}", RESERVED_VAL);
-  let bin_ns = format!("{:01b}", if header.ns() { 1 } else { 0 });
-  let bin_cwr = format!("{:01b}", if header.cwr() { 1 } else { 0 });
-  let bin_ece = format!("{:01b}", if header.ece() { 1 } else { 0 });
-  let bin_urg = format!("{:01b}", if header.urg() { 1 } else { 0 });
-  let bin_ack = format!("{:01b}", if header.ack() { 1 } else { 0 });
-  let bin_psh = format!("{:01b}", if header.psh() { 1 } else { 0 });
-  let bin_rst = format!("{:01b}", if header.rst() { 1 } else { 0 });
-  let bin_syn = format!("{:01b}", if header.syn() { 1 } else { 0 });
-  let bin_fin = format!("{:01b}", if header.fin() { 1 } else { 0 });
-  let bin_window_size = format!("{:016b}", header.window_size());
-  let bin_checksum = format!("{:016b}", header.checksum());
-  let bin_urgent_pointer = format!("{:016b}", header.urgent_pointer());
+  let bin_ns = format!("{:01b}", if header.ns { 1 } else { 0 });
+  let bin_cwr = format!("{:01b}", if header.cwr { 1 } else { 0 });
+  let bin_ece = format!("{:01b}", if header.ece { 1 } else { 0 });
+  let bin_urg = format!("{:01b}", if header.urg { 1 } else { 0 });
+  let bin_ack = format!("{:01b}", if header.ack { 1 } else { 0 });
+  let bin_psh = format!("{:01b}", if header.psh { 1 } else { 0 });
+  let bin_rst = format!("{:01b}", if header.rst { 1 } else { 0 });
+  let bin_syn = format!("{:01b}", if header.syn { 1 } else { 0 });
+  let bin_fin = format!("{:01b}", if header.fin { 1 } else { 0 });
+  let bin_window_size = format!("{:016b}", header.window_size);
+  let bin_checksum = format!("{:016b}", header.checksum);
+  let bin_urgent_pointer = format!("{:016b}", header.urgent_pointer);
 
   println!(
     "{}{}\n{}\n{}\n{}{}{}{}{}{}{}{}{}{}{}{}\n{}{}",
@@ -131,25 +133,25 @@ pub fn tcp_header_binary(header: &TcpHeaderSlice) {
   }
 }
 
-pub fn tcp_header_hex_line(header: &TcpHeaderSlice) {
-  let hex_source_port = format!("{:04x}", header.source_port());
-  let hex_destination_port = format!("{:04x}", header.destination_port());
-  let hex_sequence_number = format!("{:08x}", header.sequence_number());
-  let hex_acknowledgment_number = format!("{:08x}", header.acknowledgment_number());
+pub fn tcp_header_hex_line(header: &TcpHeader) {
+  let hex_source_port = format!("{:04x}", header.source_port);
+  let hex_destination_port = format!("{:04x}", header.destination_port);
+  let hex_sequence_number = format!("{:08x}", header.sequence_number);
+  let hex_acknowledgment_number = format!("{:08x}", header.acknowledgment_number);
   let hex_data_offset = format!("{:01x}", header.data_offset());
   let hex_reserved = format!("{:01x}", RESERVED_VAL);
-  let hex_ns = format!("{:01x}", if header.ns() { 1 } else { 0 });
-  let hex_cwr = format!("{:01x}", if header.cwr() { 1 } else { 0 });
-  let hex_ece = format!("{:01x}", if header.ece() { 1 } else { 0 });
-  let hex_urg = format!("{:01x}", if header.urg() { 1 } else { 0 });
-  let hex_ack = format!("{:01x}", if header.ack() { 1 } else { 0 });
-  let hex_psh = format!("{:01x}", if header.psh() { 1 } else { 0 });
-  let hex_rst = format!("{:01x}", if header.rst() { 1 } else { 0 });
-  let hex_syn = format!("{:01x}", if header.syn() { 1 } else { 0 });
-  let hex_fin = format!("{:01x}", if header.fin() { 1 } else { 0 });
-  let hex_window_size = format!("{:04x}", header.window_size());
-  let hex_checksum = format!("{:04x}", header.checksum());
-  let hex_urgent_pointer = format!("{:04x}", header.urgent_pointer());
+  let hex_ns = format!("{:01x}", if header.ns { 1 } else { 0 });
+  let hex_cwr = format!("{:01x}", if header.cwr { 1 } else { 0 });
+  let hex_ece = format!("{:01x}", if header.ece { 1 } else { 0 });
+  let hex_urg = format!("{:01x}", if header.urg { 1 } else { 0 });
+  let hex_ack = format!("{:01x}", if header.ack { 1 } else { 0 });
+  let hex_psh = format!("{:01x}", if header.psh { 1 } else { 0 });
+  let hex_rst = format!("{:01x}", if header.rst { 1 } else { 0 });
+  let hex_syn = format!("{:01x}", if header.syn { 1 } else { 0 });
+  let hex_fin = format!("{:01x}", if header.fin { 1 } else { 0 });
+  let hex_window_size = format!("{:04x}", header.window_size);
+  let hex_checksum = format!("{:04x}", header.checksum);
+  let hex_urgent_pointer = format!("{:04x}", header.urgent_pointer);
 
   for s in &[
     SRC_PORT.paint(&hex_source_port),
@@ -191,9 +193,9 @@ pub fn tcp_header_hex_line(header: &TcpHeaderSlice) {
   println!();
 }
 
-pub fn ip_packet_overview(sliced_packet: &SlicedPacket, ip: &InternetSlice) {
-  let (src, dst) = crate::get_ip_addresses(ip);
-  let inner_protocol = crate::get_next_protocol(ip);
+pub fn ip_packet_overview(sliced_packet: &PacketHeaders, ip: &IpHeader) {
+  let (src, dst) = ip_utils::get_ip_addresses(ip);
+  let inner_protocol = ip_utils::get_next_protocol(ip);
   println!(
     "{} -> {}\nprotocol: {:?} - payload: {} bytes ",
     src,
