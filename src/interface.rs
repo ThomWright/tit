@@ -1,9 +1,8 @@
 use etherparse;
 use etherparse::TransportHeader;
-use std::io;
 use tun_tap;
 
-use crate::ip_utils;
+use crate::errors::TitError;
 use crate::print;
 use crate::tcp;
 
@@ -13,7 +12,7 @@ pub struct Interface {
 }
 
 impl Interface {
-    pub fn new() -> io::Result<Interface> {
+    pub fn new() -> Result<Interface, TitError> {
         // We don't care about the 4 byte header
         let iface = tun_tap::Iface::without_packet_info("tun_tit%d", tun_tap::Mode::Tun)?;
 
@@ -25,7 +24,7 @@ impl Interface {
         })
     }
 
-    pub fn listen(mut self) -> io::Result<()> {
+    pub fn listen(mut self) -> Result<(), TitError> {
         // Ethernet MTU = 1500
         // I don't like reusing these, feels like I could accidentally expose data from previous packets if I'm not careful
         let mut rec_buf = [0u8; 1500];
@@ -35,7 +34,7 @@ impl Interface {
 
             let raw_packet = &rec_buf[..num_bytes];
 
-            let len = self.handle_packet(&raw_packet, &mut snd_buf);
+            let len = self.handle_packet(&raw_packet, &mut snd_buf)?;
 
             if let Some(len) = len {
                 self.tun.send(&snd_buf[..len])?;
@@ -43,44 +42,63 @@ impl Interface {
         }
     }
 
-    fn handle_packet(&mut self, raw_packet: &[u8], mut response: &mut [u8]) -> Option<usize> {
+    fn handle_packet(
+        &mut self,
+        raw_packet: &[u8],
+        mut response: &mut [u8],
+    ) -> Result<Option<usize>, TitError> {
+        println!("RECEIVED");
+        print::packet_overview(&raw_packet);
+        println!();
+
         match etherparse::PacketHeaders::from_ip_slice(&raw_packet) {
             Err(error) => eprintln!("Error: {}", error),
             Ok(packet) => {
-                if let Some(ip) = &packet.ip {
-                    let (src, dst) = ip_utils::get_ip_addresses(&ip);
+                // TODO: would be nice to be able to respond to e.g. pings (ICMP)
 
-                    // TODO: consider responding to pings (protocol=1 ICMP)
+                if let (Some(ip_header), Some(trans_header)) = (&packet.ip, &packet.transport) {
+                    match trans_header {
+                        TransportHeader::Tcp(tcp_header) => {
+                            let res_len = self.tcp.receive(
+                                &ip_header,
+                                &tcp_header,
+                                &packet.payload,
+                                &mut response,
+                            )?;
 
-                    print::ip_packet_overview(&packet, &ip);
-
-                    if let Some(transport) = &packet.transport {
-                        match transport {
-                            TransportHeader::Tcp(header) => {
-                                let conn_id = tcp::ConnectionId::new(
-                                    src,
-                                    header.source_port,
-                                    dst,
-                                    header.destination_port,
-                                );
-
-                                println!("{}", conn_id);
-                                print::tcp_header(&header);
-
-                                return self.tcp.receive(
-                                    conn_id,
-                                    &header,
-                                    &packet.payload,
-                                    &mut response,
-                                );
+                            if let Some(len) = res_len {
+                                println!("SENDING");
+                                print::packet_overview(&response[..len]);
+                                println!();
                             }
-                            TransportHeader::Udp(_header) => {}
+
+                            return Ok(res_len);
                         }
+                        TransportHeader::Udp(_header) => {}
                     }
-                    println!();
                 }
             }
         }
-        None
+        Ok(None)
     }
 }
+
+// fn parse_headers(raw_packet: &[u8]) -> Option<(IpHeader, TcpHeader)> {
+//     match etherparse::PacketHeaders::from_ip_slice(&raw_packet) {
+//         Err(error) => eprintln!("Error: {}", error),
+//         Ok(packet) => {
+//             if let Some((ip_header, tcp))
+//             if let Some(ip_header) = &packet.ip {
+//                 if let Some(trans_header) = &packet.transport {
+//                     match trans_header {
+//                         TransportHeader::Tcp(tcp_header) => {
+//                             return Some((ip_header., tcp_header));
+//                         }
+//                         TransportHeader::Udp(_header) => {}
+//                     }
+//                 }
+//             }
+//         }
+//     }
+//     None
+// }

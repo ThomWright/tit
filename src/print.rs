@@ -1,8 +1,10 @@
 use ansi_term::Colour;
 use etherparse;
-use etherparse::{IpHeader, PacketHeaders, TcpHeader};
+use etherparse::{TcpHeader, TransportHeader};
 
 use crate::ip_utils;
+use crate::ip_utils::IpPair;
+use crate::tcp;
 
 // TODO: Would be nice to define these as `Style`s, not colours, and maybe to use unique styles
 const SRC_PORT: Colour = Colour::Red;
@@ -81,9 +83,79 @@ const RESERVED_VAL: u8 = 0;
 pub fn tcp_header(header: &TcpHeader) {
   tcp_header_hex_line(&header);
   tcp_header_binary(&header);
+  tcp_header_flags(&header);
 }
 
-pub fn tcp_header_binary(header: &TcpHeader) {
+fn tcp_header_flags(header: &TcpHeader) {
+  let mut flags = vec![];
+  if header.ns {
+    flags.push(NS.paint("NS"));
+  };
+  if header.cwr {
+    flags.push(CWR.paint("CWR"));
+  };
+  if header.ece {
+    flags.push(ECE.paint("ECE"));
+  };
+  if header.urg {
+    flags.push(URG.paint("URG"));
+  };
+  if header.ack {
+    flags.push(ACK.paint("ACK"));
+  };
+  if header.psh {
+    flags.push(PSH.paint("PSH"));
+  };
+  if header.rst {
+    flags.push(RST.paint("RST"));
+  };
+  if header.syn {
+    flags.push(SYN.paint("SYN"));
+  };
+  if header.fin {
+    flags.push(FIN.paint("FIN"));
+  };
+
+  if !flags.is_empty() {
+    print!("Flags: ");
+    for f in flags {
+      print!("{} ", f);
+    }
+    println!();
+  }
+
+  // print!("Flags: ");
+  // if header.ns {
+  //   print!("{} ", NS.paint("NS"))
+  // };
+  // if header.cwr {
+  //   print!("{} ", CWR.paint("CWR"))
+  // };
+  // if header.ece {
+  //   print!("{} ", ECE.paint("ECE"))
+  // };
+  // if header.urg {
+  //   print!("{} ", URG.paint("URG"))
+  // };
+  // if header.ack {
+  //   print!("{} ", ACK.paint("ACK"))
+  // };
+  // if header.psh {
+  //   print!("{} ", PSH.paint("PSH"))
+  // };
+  // if header.rst {
+  //   print!("{} ", RST.paint("RST"))
+  // };
+  // if header.syn {
+  //   print!("{} ", SYN.paint("SYN"))
+  // };
+  // if header.fin {
+  //   print!("{} ", FIN.paint("FIN"))
+  // };
+  // println!();
+}
+
+fn tcp_header_binary(header: &TcpHeader) {
   let bin_source_port = format!("{:016b}", header.source_port);
   let bin_destination_port = format!("{:016b}", header.destination_port);
   let bin_sequence_number = format!("{:032b}", header.sequence_number);
@@ -133,7 +205,7 @@ pub fn tcp_header_binary(header: &TcpHeader) {
   }
 }
 
-pub fn tcp_header_hex_line(header: &TcpHeader) {
+fn tcp_header_hex_line(header: &TcpHeader) {
   let hex_source_port = format!("{:04x}", header.source_port);
   let hex_destination_port = format!("{:04x}", header.destination_port);
   let hex_sequence_number = format!("{:08x}", header.sequence_number);
@@ -193,14 +265,48 @@ pub fn tcp_header_hex_line(header: &TcpHeader) {
   println!();
 }
 
-pub fn ip_packet_overview(sliced_packet: &PacketHeaders, ip: &IpHeader) {
-  let (src, dst) = ip_utils::get_ip_addresses(ip);
-  let inner_protocol = ip_utils::get_next_protocol(ip);
-  println!(
-    "{} -> {}\nprotocol: {:?} - payload: {} bytes ",
-    src,
-    dst,
-    inner_protocol,
-    sliced_packet.payload.len(),
-  );
+pub fn packet_overview(raw_packet: &[u8]) {
+  match etherparse::PacketHeaders::from_ip_slice(&raw_packet) {
+    Err(error) => eprintln!("Error: {}", error),
+    Ok(packet) => match &packet.ip {
+      Some(ip_hdr) => match &packet.transport {
+        Some(tran_hdr) => match tran_hdr {
+          TransportHeader::Tcp(tcp_hdr) => {
+            let conn_id = tcp::ConnectionId::new(ip_hdr, tcp_hdr);
+            let inner_protocol = ip_utils::get_next_protocol(ip_hdr);
+            print!("{}\n", conn_id);
+            println!(
+              "protocol: {:?} - payload: {} bytes ",
+              inner_protocol,
+              packet.payload.len(),
+            );
+            tcp_header(&tcp_hdr);
+          }
+          TransportHeader::Udp(_hdr) => {
+            let ip_pair = IpPair::from(ip_hdr);
+            let inner_protocol = ip_utils::get_next_protocol(ip_hdr);
+            print!("{}\n", ip_pair);
+            println!(
+              "protocol: {:?} - payload: {} bytes ",
+              inner_protocol,
+              packet.payload.len(),
+            );
+          }
+        },
+        None => {
+          let ip_pair = IpPair::from(ip_hdr);
+          let inner_protocol = ip_utils::get_next_protocol(ip_hdr);
+          print!("{}\n", ip_pair);
+          println!(
+            "protocol: {:?} - payload: {} bytes ",
+            inner_protocol,
+            packet.payload.len(),
+          );
+        }
+      },
+      None => {
+        println!("Unknown packet");
+      }
+    },
+  }
 }

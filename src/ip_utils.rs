@@ -1,5 +1,7 @@
 use etherparse::{IpHeader, IpTrafficClass};
-use std::net::IpAddr;
+use std::fmt;
+use std::fmt::{Display, Formatter};
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 /// Get the IP protocol type from the numberic identifier.
 pub fn ip_protocol(ip_protocol_number: u8) -> Option<etherparse::IpTrafficClass> {
@@ -152,16 +154,39 @@ pub fn ip_protocol(ip_protocol_number: u8) -> Option<etherparse::IpTrafficClass>
   }
 }
 
-pub fn get_ip_addresses(ip: &IpHeader) -> (IpAddr, IpAddr) {
-  match ip {
-    IpHeader::Version4(header) => (
-      IpAddr::from(header.source),
-      IpAddr::from(header.destination),
-    ),
-    IpHeader::Version6(header) => (
-      IpAddr::from(header.source),
-      IpAddr::from(header.destination),
-    ),
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum IpPair {
+  V4 { src: Ipv4Addr, dst: Ipv4Addr },
+  V6 { src: Ipv6Addr, dst: Ipv6Addr },
+}
+
+impl Display for IpPair {
+  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    match self {
+      IpPair::V4 { src, .. } => write!(f, "{}", src)?,
+      IpPair::V6 { src, .. } => write!(f, "{}", src)?,
+    };
+    write!(f, " -> ")?;
+    match self {
+      IpPair::V4 { dst, .. } => write!(f, "{}", dst)?,
+      IpPair::V6 { dst, .. } => write!(f, "{}", dst)?,
+    };
+    Ok(())
+  }
+}
+
+impl From<&IpHeader> for IpPair {
+  fn from(ip: &IpHeader) -> Self {
+    match ip {
+      IpHeader::Version4(header) => IpPair::V4 {
+        src: Ipv4Addr::from(header.source),
+        dst: Ipv4Addr::from(header.destination),
+      },
+      IpHeader::Version6(header) => IpPair::V6 {
+        src: Ipv6Addr::from(header.source),
+        dst: Ipv6Addr::from(header.destination),
+      },
+    }
   }
 }
 
