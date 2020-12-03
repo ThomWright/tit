@@ -3,53 +3,96 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt;
 use std::fmt::{Display, Formatter};
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 use crate::errors::TitError;
 use crate::ip_utils::IpPair;
-use crate::print;
 
 /// From the spec:
 ///
 /// > To allow for many processes within a single Host to use TCP
 /// > communication facilities simultaneously, the TCP provides a set of
-/// > addresses or ports within each host.  Concatenated with the network
+/// > addresses or ports within each host. Concatenated with the network
 /// > and host addresses from the internet communication layer, this forms
-/// > a socket.  A pair of sockets uniquely identifies each connection.
+/// > a socket. A pair of sockets uniquely identifies each connection.
 ///
 /// Written from the point of view of an incoming connection.
-///
-/// TODO: remove `IpPair` and just make this an enum?
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub struct ConnectionId {
-  ip_addrs: IpPair,
-  src_port: u16,
-  dst_port: u16,
+pub enum ConnectionId {
+  V4 {
+    remote_addr: Ipv4Addr,
+    remote_port: u16,
+    local_addr: Ipv4Addr,
+    local_port: u16,
+  },
+  V6 {
+    remote_addr: Ipv6Addr,
+    remote_port: u16,
+    local_addr: Ipv6Addr,
+    local_port: u16,
+  },
 }
 
 impl ConnectionId {
-  pub fn new(ip_header: &IpHeader, tcp_header: &TcpHeader) -> ConnectionId {
-    let ips = IpPair::from(ip_header);
+  /// Create a new `ConnectionId` from incoming headers
+  pub fn new(incoming_ip_header: &IpHeader, incoming_tcp_header: &TcpHeader) -> ConnectionId {
+    let ips = IpPair::from(incoming_ip_header);
 
-    ConnectionId {
-      ip_addrs: ips,
-      src_port: tcp_header.source_port,
-      dst_port: tcp_header.destination_port,
+    match ips {
+      IpPair::V4 { src, dst } => ConnectionId::V4 {
+        remote_addr: src,
+        remote_port: incoming_tcp_header.source_port,
+        local_addr: dst,
+        local_port: incoming_tcp_header.destination_port,
+      },
+      IpPair::V6 { src, dst } => ConnectionId::V6 {
+        remote_addr: src,
+        remote_port: incoming_tcp_header.source_port,
+        local_addr: dst,
+        local_port: incoming_tcp_header.destination_port,
+      },
+    }
+  }
+
+  fn local_port(&self) -> u16 {
+    match self {
+      ConnectionId::V4 { local_port, .. } => *local_port,
+      ConnectionId::V6 { local_port, .. } => *local_port,
+    }
+  }
+
+  fn remote_port(&self) -> u16 {
+    match self {
+      ConnectionId::V4 { remote_port, .. } => *remote_port,
+      ConnectionId::V6 { remote_port, .. } => *remote_port,
     }
   }
 }
 
 impl Display for ConnectionId {
   fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-    match self.ip_addrs {
-      IpPair::V4 { src, .. } => write!(f, "{}:{}", src, self.src_port)?,
-      IpPair::V6 { src, .. } => write!(f, "{}:{}", src, self.src_port)?,
-    };
-    write!(f, " -> ")?;
-    match self.ip_addrs {
-      IpPair::V4 { dst, .. } => write!(f, "{}:{}", dst, self.dst_port)?,
-      IpPair::V6 { dst, .. } => write!(f, "{}:{}", dst, self.dst_port)?,
-    };
-    Ok(())
+    match self {
+      ConnectionId::V4 {
+        remote_addr,
+        remote_port,
+        local_addr,
+        local_port,
+      } => write!(
+        f,
+        "{}:{} <> [{}:{}]",
+        remote_addr, remote_port, local_addr, local_port
+      ),
+      ConnectionId::V6 {
+        remote_addr,
+        remote_port,
+        local_addr,
+        local_port,
+      } => write!(
+        f,
+        "{}:{} <> [{}:{}]",
+        remote_addr, remote_port, local_addr, local_port
+      ),
+    }
   }
 }
 
@@ -137,19 +180,27 @@ impl Tcp {
           });
 
           // TODO: just echo back for now, do something better later
-          let res = PacketBuilder::ip(match conn_id.ip_addrs {
-            IpPair::V4 { src, dst } => IpHeader::Version4(Ipv4Header::new(
+          let res = PacketBuilder::ip(match conn_id {
+            ConnectionId::V4 {
+              local_addr,
+              remote_addr,
+              ..
+            } => IpHeader::Version4(Ipv4Header::new(
               0,
               64,
               IpTrafficClass::Tcp,
-              dst.octets(),
-              src.octets(),
+              local_addr.octets(),
+              remote_addr.octets(),
             )),
-            IpPair::V6 { .. } => unimplemented!(),
+            ConnectionId::V6 {
+              local_addr: _,
+              remote_addr: _,
+              ..
+            } => unimplemented!("Ipv6Header is a pain to create - the etherparse API is lacking"),
           })
           .tcp(
-            conn_id.dst_port,
-            conn_id.src_port,
+            conn_id.local_port(),
+            conn_id.remote_port(),
             tcp_header.sequence_number + 1, // FIXME: lol
             tcp_header.window_size,         // TODO: uuhhh just use whatever the client uses
           )
