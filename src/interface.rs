@@ -87,23 +87,3 @@ impl Interface {
         Ok(None)
     }
 }
-
-// fn parse_headers(raw_packet: &[u8]) -> Option<(IpHeader, TcpHeader)> {
-//     match etherparse::PacketHeaders::from_ip_slice(&raw_packet) {
-//         Err(error) => eprintln!("Error: {}", error),
-//         Ok(packet) => {
-//             if let Some((ip_header, tcp))
-//             if let Some(ip_header) = &packet.ip {
-//                 if let Some(trans_header) = &packet.transport {
-//                     match trans_header {
-//                         TransportHeader::Tcp(tcp_header) => {
-//                             return Some((ip_header., tcp_header));
-//                         }
-//                         TransportHeader::Udp(_header) => {}
-//                     }
-//                 }
-//             }
-//         }
-//     }
-//     None
-// }
