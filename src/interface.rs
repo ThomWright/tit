@@ -14,7 +14,10 @@ pub struct Interface {
 impl Interface {
     pub fn new() -> Result<Interface, TitError> {
         // We don't care about the 4 byte header
-        let iface = tun_tap::Iface::without_packet_info("tun_tit%d", tun_tap::Mode::Tun)?;
+        let iface = tun_tap::Iface::without_packet_info(
+            "tun_tit%d",
+            tun_tap::Mode::Tun,
+        )?;
 
         let tcp_impl = tcp::Tcp::new();
 
@@ -56,7 +59,9 @@ impl Interface {
             Ok(packet) => {
                 // TODO: would be nice to be able to respond to e.g. pings (ICMP)
 
-                if let (Some(ip_header), Some(trans_header)) = (&packet.ip, &packet.transport) {
+                if let (Some(ip_header), Some(trans_header)) =
+                    (&packet.ip, &packet.transport)
+                {
                     match trans_header {
                         TransportHeader::Tcp(tcp_header) => {
                             let res_len = self.tcp.receive(
