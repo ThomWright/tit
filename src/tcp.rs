@@ -137,12 +137,97 @@ enum TcpState {
   Closed,
 }
 
-struct ConnectionState {
+/// In the spec this is called a Transmission Control Block (TCB)
+///
+/// ## Send Sequence Space
+///
+/// ```txt
+///      1         2          3          4
+/// ----------|----------|----------|----------
+///        SND.UNA    SND.NXT    SND.UNA
+///                             +SND.WND
+/// ```
+///
+/// 1. old sequence numbers which have been acknowledged
+/// 2. sequence numbers of unacknowledged data
+/// 3. sequence numbers allowed for new data transmission
+/// 4. future sequence numbers which are not yet allowed
+///
+/// ## Receive Sequence Space
+///
+/// ```txt
+///      1          2          3
+/// ----------|----------|----------
+///        RCV.NXT    RCV.NXT
+///                  +RCV.WND
+/// ```
+///
+/// 1. old sequence numbers which have been acknowledged
+/// 2. sequence numbers allowed for new reception
+/// 3. future sequence numbers which are not yet allowed
+struct Connection {
   state: TcpState,
+
+  /// Send unacknowledged
+  snd_una: u32,
+  /// Send next
+  snd_nxt: u32,
+  /// Send window
+  snd_wnd: u16,
+  /// Send urgent pointer
+  snd_up: bool,
+  /// Segment sequence number used for last window update
+  snd_wl1: u32,
+  /// Segment acknowledgment number used for last window update
+  snd_wl2: u32,
+  /// Initial send sequence number
+  iss: u32,
+
+  /// Receive next
+  rcv_nxt: u32,
+  /// Receive window
+  rcv_wnd: u16,
+  /// Receive urgent pointer
+  rcv_up: bool,
+  /// Initial receive sequence number
+  irs: u32,
 }
 
-/// In the spec this is called a Transmission Control Block (TCB)
-type Connections = HashMap<ConnectionId, ConnectionState>;
+impl Default for Connection {
+  fn default() -> Self {
+    Connection {
+      state: TcpState::Closed,
+      snd_una: 0,
+      snd_nxt: 0,
+      snd_wnd: 0,
+      snd_up: false,
+      snd_wl1: 0,
+      snd_wl2: 0,
+      iss: 0,
+      rcv_nxt: 0,
+      rcv_wnd: 0,
+      rcv_up: false,
+      irs: 0,
+    }
+  }
+}
+
+impl Connection {
+  fn new_incoming(hdr: &TcpHeader, iss: u32) -> Connection {
+    Connection {
+      state: TcpState::SynReceived,
+      iss,
+      snd_una: iss,
+      snd_nxt: iss,
+      irs: hdr.sequence_number,
+      rcv_nxt: hdr.sequence_number + 1,
+      rcv_wnd: hdr.window_size,
+      ..Connection::default()
+    }
+  }
+}
+
+type Connections = HashMap<ConnectionId, Connection>;
 
 pub struct Tcp {
   connections: Connections,
@@ -167,17 +252,11 @@ impl Tcp {
 
     let conn_id = ConnectionId::new(&ip_header, &tcp_header);
 
-    // print::tcp_header(&tcp_header);
-    // println!("{:#?}", tcp_header);
-    // println!("{:#?}", tcp_header.options_iterator().collect::<Vec<_>>());
-
     if tcp_header.syn {
       match self.connections.entry(conn_id) {
         Entry::Occupied(_) => {}
         Entry::Vacant(entry) => {
-          entry.insert(ConnectionState {
-            state: TcpState::SynReceived,
-          });
+          let conn = Connection::new_incoming(&tcp_header, Tcp::gen_iss());
 
           // TODO: just echo back for now, do something better later
           let res = PacketBuilder::ip(match conn_id {
@@ -201,11 +280,13 @@ impl Tcp {
           .tcp(
             conn_id.local_port(),
             conn_id.remote_port(),
-            tcp_header.sequence_number + 1, // FIXME: lol
-            tcp_header.window_size,         // TODO: uuhhh just use whatever the client uses
+            conn.snd_nxt,
+            conn.snd_wnd,
           )
           .syn()
-          .ack(tcp_header.sequence_number);
+          .ack(conn.rcv_nxt);
+
+          entry.insert(conn);
 
           let res_payload = payload;
           let res_len = res.size(res_payload.len());
@@ -217,5 +298,9 @@ impl Tcp {
       }
     }
     Ok(None)
+  }
+
+  fn gen_iss() -> u32 {
+    0 // FIXME: generate a secure initial sequence number
   }
 }
