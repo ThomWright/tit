@@ -84,6 +84,8 @@ pub fn tcp_header(header: &TcpHeader) {
   tcp_header_hex_line(&header);
   tcp_header_binary(&header);
   tcp_header_flags(&header);
+  // TODO: print options
+  // println!("{:#?}", tcp_header.options_iterator().collect::<Vec<_>>());
 }
 
 fn tcp_header_flags(header: &TcpHeader) {
@@ -123,36 +125,6 @@ fn tcp_header_flags(header: &TcpHeader) {
     }
     println!();
   }
-
-  // print!("Flags: ");
-  // if header.ns {
-  //   print!("{} ", NS.paint("NS"))
-  // };
-  // if header.cwr {
-  //   print!("{} ", CWR.paint("CWR"))
-  // };
-  // if header.ece {
-  //   print!("{} ", ECE.paint("ECE"))
-  // };
-  // if header.urg {
-  //   print!("{} ", URG.paint("URG"))
-  // };
-  // if header.ack {
-  //   print!("{} ", ACK.paint("ACK"))
-  // };
-  // if header.psh {
-  //   print!("{} ", PSH.paint("PSH"))
-  // };
-  // if header.rst {
-  //   print!("{} ", RST.paint("RST"))
-  // };
-  // if header.syn {
-  //   print!("{} ", SYN.paint("SYN"))
-  // };
-  // if header.fin {
-  //   print!("{} ", FIN.paint("FIN"))
-  // };
-  // println!();
 }
 
 fn tcp_header_binary(header: &TcpHeader) {
