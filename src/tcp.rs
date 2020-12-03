@@ -7,7 +7,7 @@ use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-use crate::errors::TitError;
+use crate::errors::{Result, TitError};
 use crate::ip_utils::IpPair;
 
 /// From the spec:
@@ -252,8 +252,8 @@ impl Tcp {
         payload: &[u8],
         // TODO: we don't want to just send this, we need to remember it in case we need to retransmit it
         mut res_buf: &mut [u8],
-    ) -> Result<Option<usize>, TitError> {
-        // TODO: verify checksum
+    ) -> Result<Option<usize>> {
+        Tcp::verify_checksum(ip_header, tcp_header, payload)?;
 
         let conn_id = ConnectionId::new(&ip_header, &tcp_header);
 
@@ -266,31 +266,33 @@ impl Tcp {
 
                     // TODO: just echo back for now, do something better later
                     let res = PacketBuilder::ip(match conn_id {
-            ConnectionId::V4 {
-              local_addr,
-              remote_addr,
-              ..
-            } => IpHeader::Version4(Ipv4Header::new(
-              0,
-              64,
-              IpTrafficClass::Tcp,
-              local_addr.octets(),
-              remote_addr.octets(),
-            )),
-            ConnectionId::V6 {
-              local_addr: _,
-              remote_addr: _,
-              ..
-            } => unimplemented!("Ipv6Header is a pain to create - the etherparse API is lacking"),
-          })
-          .tcp(
-            conn_id.local_port(),
-            conn_id.remote_port(),
-            conn.snd_nxt,
-            conn.snd_wnd,
-          )
-          .syn()
-          .ack(conn.rcv_nxt);
+                        ConnectionId::V4 {
+                            local_addr,
+                            remote_addr,
+                            ..
+                        } => IpHeader::Version4(Ipv4Header::new(
+                            0,
+                            64,
+                            IpTrafficClass::Tcp,
+                            local_addr.octets(),
+                            remote_addr.octets(),
+                        )),
+                        ConnectionId::V6 {
+                            local_addr: _,
+                            remote_addr: _,
+                            ..
+                        } => unimplemented!(
+              "Ipv6Header is a pain to create - the etherparse API is lacking"
+            ),
+                    })
+                    .tcp(
+                        conn_id.local_port(),
+                        conn_id.remote_port(),
+                        conn.snd_nxt,
+                        conn.snd_wnd,
+                    )
+                    .syn()
+                    .ack(conn.rcv_nxt);
 
                     entry.insert(conn);
 
@@ -304,6 +306,31 @@ impl Tcp {
             }
         }
         Ok(None)
+    }
+
+    // TODO: test this works as I expect!
+    fn verify_checksum(
+        ip_header: &IpHeader,
+        tcp_header: &TcpHeader,
+        payload: &[u8],
+    ) -> Result<()> {
+        match ip_header {
+            IpHeader::Version4(hdr) => {
+                if tcp_header.calc_checksum_ipv4(hdr, &payload)?
+                    != tcp_header.checksum
+                {
+                    return Err(TitError::ChecksumDifference);
+                }
+            }
+            IpHeader::Version6(hdr) => {
+                if tcp_header.calc_checksum_ipv6(hdr, &payload)?
+                    != tcp_header.checksum
+                {
+                    return Err(TitError::ChecksumDifference);
+                }
+            }
+        };
+        Ok(())
     }
 
     fn gen_iss() -> u32 {

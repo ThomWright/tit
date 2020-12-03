@@ -2,7 +2,7 @@ use etherparse;
 use etherparse::TransportHeader;
 use tun_tap;
 
-use crate::errors::TitError;
+use crate::errors::Result;
 use crate::print;
 use crate::tcp;
 
@@ -12,7 +12,7 @@ pub struct Interface {
 }
 
 impl Interface {
-    pub fn new() -> Result<Interface, TitError> {
+    pub fn new() -> Result<Interface> {
         // We don't care about the 4 byte header
         let iface = tun_tap::Iface::without_packet_info(
             "tun_tit%d",
@@ -27,7 +27,7 @@ impl Interface {
         })
     }
 
-    pub fn listen(mut self) -> Result<(), TitError> {
+    pub fn listen(mut self) -> Result<()> {
         // Ethernet MTU = 1500
         // I don't like reusing these, feels like I could accidentally expose data from previous packets if I'm not careful
         let mut rec_buf = [0u8; 1500];
@@ -49,7 +49,7 @@ impl Interface {
         &mut self,
         raw_packet: &[u8],
         mut response: &mut [u8],
-    ) -> Result<Option<usize>, TitError> {
+    ) -> Result<Option<usize>> {
         println!("RECEIVED");
         print::packet_overview(&raw_packet);
         println!();

@@ -1,9 +1,9 @@
-use etherparse::WriteError;
-
 #[derive(Debug)]
 pub enum TitError {
     Io(std::io::Error),
-    PacketWrite(WriteError),
+    PacketWrite(etherparse::WriteError),
+    ChecksumDifference,
+    ChecksumCalcFailure(etherparse::ValueError),
 }
 
 impl From<std::io::Error> for TitError {
@@ -12,8 +12,16 @@ impl From<std::io::Error> for TitError {
     }
 }
 
-impl From<WriteError> for TitError {
-    fn from(e: WriteError) -> Self {
+impl From<etherparse::WriteError> for TitError {
+    fn from(e: etherparse::WriteError) -> Self {
         TitError::PacketWrite(e)
     }
 }
+
+impl From<etherparse::ValueError> for TitError {
+    fn from(e: etherparse::ValueError) -> Self {
+        TitError::ChecksumCalcFailure(e)
+    }
+}
+
+pub type Result<T> = std::result::Result<T, TitError>;
