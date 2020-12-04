@@ -337,3 +337,72 @@ impl Tcp {
         0 // FIXME: generate a secure initial sequence number
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use etherparse::{
+        IpHeader, IpTrafficClass, Ipv4Header, PacketHeaders, SerializedSize,
+        TcpHeader, TCP_MINIMUM_HEADER_SIZE,
+    };
+
+    #[test]
+    fn original_syn() {
+        let mut tcp = Tcp::new();
+
+        let payload = [];
+        let (req_ip_hdr, mut req_tcp_hdr) = create_headers(&payload);
+
+        req_tcp_hdr.syn = true;
+        req_tcp_hdr.checksum = req_tcp_hdr
+            .calc_checksum_ipv4(&req_ip_hdr, &payload)
+            .unwrap();
+
+        let mut res_buf = [0u8; 1500];
+        let res_len = tcp
+            .receive(
+                &IpHeader::Version4(req_ip_hdr),
+                &req_tcp_hdr,
+                &payload,
+                &mut res_buf,
+            )
+            .unwrap();
+
+        assert_eq!(
+            res_len,
+            Some(Ipv4Header::SERIALIZED_SIZE + TCP_MINIMUM_HEADER_SIZE),
+            "response length should be size of IP+TCP headers"
+        );
+        let res_headers =
+            PacketHeaders::from_ip_slice(&res_buf[..res_len.unwrap()]).unwrap();
+
+        assert_eq!(
+            res_headers.payload.len(),
+            0,
+            "should respond with no payload"
+        );
+        // let res_ip_hdr = res_headers.ip.unwrap();
+        let res_trans_hdr = res_headers.transport.unwrap().tcp().unwrap();
+        assert_eq!(res_trans_hdr.syn, true, "should respond with a SYN/ACK");
+        assert_eq!(res_trans_hdr.ack, true, "should respond with a SYN/ACK");
+        assert_eq!(
+            res_trans_hdr.acknowledgment_number,
+            req_tcp_hdr.sequence_number + 1,
+            "response should acknowledge the correct sequence number"
+        );
+    }
+
+    fn create_headers(payload: &[u8]) -> (Ipv4Header, TcpHeader) {
+        let tcp_hdr = TcpHeader::new(4321, 80, 0, 1024);
+
+        let ip_hdr = Ipv4Header::new(
+            tcp_hdr.header_len() + payload.len() as u16,
+            64,
+            IpTrafficClass::Tcp,
+            [192, 168, 0, 1],
+            [10, 0, 0, 10],
+        );
+
+        (ip_hdr, tcp_hdr)
+    }
+}
