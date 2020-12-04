@@ -239,14 +239,29 @@ fn tcp_header_hex_line(header: &TcpHeader) {
     println!();
 }
 
-pub fn packet_overview(raw_packet: &[u8]) {
+pub enum Direction {
+    Incoming,
+    Outgoing,
+}
+pub fn packet_overview(raw_packet: &[u8], direction: Direction) {
     match etherparse::PacketHeaders::from_ip_slice(&raw_packet) {
         Err(error) => eprintln!("Error: {}", error),
         Ok(packet) => match &packet.ip {
             Some(ip_hdr) => match &packet.transport {
                 Some(tran_hdr) => match tran_hdr {
                     TransportHeader::Tcp(tcp_hdr) => {
-                        let conn_id = tcp::ConnectionId::new(ip_hdr, tcp_hdr);
+                        let conn_id = match direction {
+                            Direction::Incoming => {
+                                tcp::ConnectionId::from_incoming(
+                                    ip_hdr, tcp_hdr,
+                                )
+                            }
+                            Direction::Outgoing => {
+                                tcp::ConnectionId::from_outgoing(
+                                    ip_hdr, tcp_hdr,
+                                )
+                            }
+                        };
                         let inner_protocol =
                             ip_utils::get_next_protocol(ip_hdr);
                         print!("{}\n", conn_id);

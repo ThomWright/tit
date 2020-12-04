@@ -4,6 +4,7 @@ use tun_tap;
 
 use crate::errors::Result;
 use crate::print;
+use crate::print::Direction;
 use crate::tcp;
 
 pub struct Interface {
@@ -51,7 +52,7 @@ impl Interface {
         mut response: &mut [u8],
     ) -> Result<Option<usize>> {
         println!("RECEIVED");
-        print::packet_overview(&raw_packet);
+        print::packet_overview(&raw_packet, Direction::Incoming);
         println!();
 
         match etherparse::PacketHeaders::from_ip_slice(&raw_packet) {
@@ -73,7 +74,10 @@ impl Interface {
 
                             if let Some(len) = res_len {
                                 println!("SENDING");
-                                print::packet_overview(&response[..len]);
+                                print::packet_overview(
+                                    &response[..len],
+                                    Direction::Outgoing,
+                                );
                                 println!();
                             }
 

@@ -37,7 +37,7 @@ pub enum ConnectionId {
 
 impl ConnectionId {
     /// Create a new `ConnectionId` from incoming headers
-    pub fn new(
+    pub fn from_incoming(
         incoming_ip_header: &IpHeader,
         incoming_tcp_header: &TcpHeader,
     ) -> ConnectionId {
@@ -55,6 +55,29 @@ impl ConnectionId {
                 remote_port: incoming_tcp_header.source_port,
                 local_addr: dst,
                 local_port: incoming_tcp_header.destination_port,
+            },
+        }
+    }
+
+    /// Create a new `ConnectionId` from outgoing headers
+    pub fn from_outgoing(
+        outgoing_ip_header: &IpHeader,
+        outgoing_tcp_header: &TcpHeader,
+    ) -> ConnectionId {
+        let ips = IpPair::from(outgoing_ip_header);
+
+        match ips {
+            IpPair::V4 { src, dst } => ConnectionId::V4 {
+                remote_addr: dst,
+                remote_port: outgoing_tcp_header.destination_port,
+                local_addr: src,
+                local_port: outgoing_tcp_header.source_port,
+            },
+            IpPair::V6 { src, dst } => ConnectionId::V6 {
+                remote_addr: dst,
+                remote_port: outgoing_tcp_header.destination_port,
+                local_addr: src,
+                local_port: outgoing_tcp_header.source_port,
             },
         }
     }
@@ -255,7 +278,7 @@ impl Tcp {
     ) -> Result<Option<usize>> {
         Tcp::verify_checksum(ip_header, tcp_header, payload)?;
 
-        let conn_id = ConnectionId::new(&ip_header, &tcp_header);
+        let conn_id = ConnectionId::from_incoming(&ip_header, &tcp_header);
 
         if tcp_header.syn {
             match self.connections.entry(conn_id) {
