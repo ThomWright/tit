@@ -194,6 +194,8 @@ enum TcpState {
 /// 2. sequence numbers allowed for new reception
 /// 3. future sequence numbers which are not yet allowed
 struct Connection {
+    id: ConnectionId,
+
     state: TcpState,
 
     /// Send unacknowledged
@@ -221,37 +223,79 @@ struct Connection {
     irs: u32,
 }
 
-impl Default for Connection {
-    fn default() -> Self {
+// impl Default for Connection {
+//     fn default() -> Self {
+//         Connection {
+//             state: TcpState::Closed,
+//             snd_una: 0,
+//             snd_nxt: 0,
+//             snd_wnd: 0,
+//             snd_up: false,
+//             snd_wl1: 0,
+//             snd_wl2: 0,
+//             iss: 0,
+//             rcv_nxt: 0,
+//             rcv_wnd: 0,
+//             rcv_up: false,
+//             irs: 0,
+//         }
+//     }
+// }
+
+impl Connection {
+    fn new_incoming(id: ConnectionId, hdr: &TcpHeader, iss: u32) -> Connection {
         Connection {
-            state: TcpState::Closed,
-            snd_una: 0,
-            snd_nxt: 0,
-            snd_wnd: 0,
+            id,
+            state: TcpState::SynReceived,
+            snd_una: iss,
+            snd_nxt: iss,
+            snd_wnd: 1024,
             snd_up: false,
             snd_wl1: 0,
             snd_wl2: 0,
-            iss: 0,
-            rcv_nxt: 0,
-            rcv_wnd: 0,
-            rcv_up: false,
-            irs: 0,
-        }
-    }
-}
-
-impl Connection {
-    fn new_incoming(hdr: &TcpHeader, iss: u32) -> Connection {
-        Connection {
-            state: TcpState::SynReceived,
             iss,
-            snd_una: iss,
-            snd_nxt: iss,
-            irs: hdr.sequence_number,
             rcv_nxt: hdr.sequence_number + 1,
             rcv_wnd: hdr.window_size,
-            ..Connection::default()
+            rcv_up: false,
+            irs: hdr.sequence_number,
         }
+    }
+
+    fn syn(&self, mut res_buf: &mut [u8]) -> Result<Option<usize>> {
+        let res = PacketBuilder::ip(match self.id {
+            ConnectionId::V4 {
+                local_addr,
+                remote_addr,
+                ..
+            } => IpHeader::Version4(Ipv4Header::new(
+                0,
+                64,
+                IpTrafficClass::Tcp,
+                local_addr.octets(),
+                remote_addr.octets(),
+            )),
+            ConnectionId::V6 {
+                local_addr: _,
+                remote_addr: _,
+                ..
+            } => unimplemented!(
+              "Ipv6Header is a pain to create - the etherparse API is lacking"
+            ),
+        })
+        .tcp(
+            self.id.local_port(),
+            self.id.remote_port(),
+            self.snd_nxt,
+            self.snd_wnd,
+        )
+        .syn()
+        .ack(self.rcv_nxt);
+
+        let res_len = res.size(0);
+
+        res.write(&mut res_buf, &[])?;
+
+        return Ok(Some(res_len));
     }
 }
 
@@ -281,53 +325,22 @@ impl Tcp {
         let conn_id = ConnectionId::from_incoming(&ip_header, &tcp_header);
 
         if tcp_header.syn {
-            match self.connections.entry(conn_id) {
-                Entry::Occupied(_) => {}
+            let conn = match self.connections.entry(conn_id) {
+                Entry::Occupied(c) => c.into_mut(),
                 Entry::Vacant(entry) => {
-                    let conn =
-                        Connection::new_incoming(&tcp_header, Tcp::gen_iss());
+                    let conn = Connection::new_incoming(
+                        conn_id,
+                        &tcp_header,
+                        Tcp::gen_iss(),
+                    );
 
-                    // TODO: just echo back for now, do something better later
-                    let res = PacketBuilder::ip(match conn_id {
-                        ConnectionId::V4 {
-                            local_addr,
-                            remote_addr,
-                            ..
-                        } => IpHeader::Version4(Ipv4Header::new(
-                            0,
-                            64,
-                            IpTrafficClass::Tcp,
-                            local_addr.octets(),
-                            remote_addr.octets(),
-                        )),
-                        ConnectionId::V6 {
-                            local_addr: _,
-                            remote_addr: _,
-                            ..
-                        } => unimplemented!(
-              "Ipv6Header is a pain to create - the etherparse API is lacking"
-            ),
-                    })
-                    .tcp(
-                        conn_id.local_port(),
-                        conn_id.remote_port(),
-                        conn.snd_nxt,
-                        conn.snd_wnd,
-                    )
-                    .syn()
-                    .ack(conn.rcv_nxt);
-
-                    entry.insert(conn);
-
-                    let res_payload = payload;
-                    let res_len = res.size(res_payload.len());
-
-                    res.write(&mut res_buf, res_payload)?;
-
-                    return Ok(Some(res_len));
+                    entry.insert(conn)
                 }
-            }
+            };
+
+            return conn.syn(&mut res_buf);
         }
+        // TODO: handle first ack
         Ok(None)
     }
 
