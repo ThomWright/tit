@@ -5,6 +5,8 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 
 use crate::ip_utils::IpPair;
 
+/// Each connection is uniquely specified by a pair of sockets identifying its two sides.
+///
 /// From the spec:
 ///
 /// > To allow for many processes within a single Host to use TCP
@@ -12,8 +14,6 @@ use crate::ip_utils::IpPair;
 /// > addresses or ports within each host. Concatenated with the network
 /// > and host addresses from the internet communication layer, this forms
 /// > a socket. A pair of sockets uniquely identifies each connection.
-///
-/// Written from the point of view of an incoming connection.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum ConnectionId {
     V4 {
