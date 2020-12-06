@@ -1,6 +1,7 @@
 use etherparse::{
     IpHeader, IpTrafficClass, Ipv4Header, PacketBuilder, TcpHeader,
 };
+use std::fmt;
 
 use super::connection_id::ConnectionId;
 use super::tcp::SeqGen;
@@ -61,6 +62,12 @@ impl TcpState {
             }
             _ => false,
         }
+    }
+}
+
+impl fmt::Display for TcpState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
     }
 }
 
@@ -135,42 +142,51 @@ impl Connection {
         id: ConnectionId,
         hdr: &TcpHeader,
         seq_gen: &SeqGen,
-    ) -> Option<Connection> {
-        if hdr.rst {
-            return None;
-        }
-        if hdr.ack {
-            // TODO: send RST
-            // <SEQ=SEG.ACK><CTL=RST>
-        }
-        if !hdr.syn {
-            return None;
-        }
+    ) -> Connection {
         let iss = seq_gen.gen_iss();
-        Some(Connection {
+        Connection {
             id,
             state: TcpState::SynReceived,
             snd_una: iss,
-            snd_nxt: iss,
+            snd_nxt: iss.wrapping_add(1),
             snd_wnd: 1024,
             snd_up: false,
             snd_wl1: 0,
             snd_wl2: 0,
             iss,
-            rcv_nxt: hdr.sequence_number + 1,
+            rcv_nxt: hdr.sequence_number.wrapping_add(1),
             rcv_wnd: hdr.window_size,
             rcv_up: false,
             irs: hdr.sequence_number,
-        })
+        }
+    }
+
+    pub fn receive(
+        &mut self,
+        hdr: &TcpHeader,
+        mut res_buf: &mut [u8],
+    ) -> Result<Option<usize>> {
+        // TODO: first check sequence number
+        // TODO: second check the RST bit
+        // third check security and precedence (nah)
+        // TODO: fourth, check the SYN bit
+        // fifth check the ACK field
+        if hdr.ack {
+            self.receive_ack(&hdr, &mut res_buf)
+        } else {
+            // if the ACK bit is off drop the segment and return
+            Ok(None)
+        }
+        // TODO: sixth, check the URG bit
+        // uhhh we've already dropped the segment... WUT
+        // TODO: seventh, process the segment text
+        // TODO: eighth, check the FIN bit
     }
 
     pub fn send_syn_ack(
         &mut self,
         mut res_buf: &mut [u8],
     ) -> Result<Option<usize>> {
-        // we need our SYN to be ACK'ed
-        self.snd_nxt = self.snd_nxt.wrapping_add(1);
-
         let res = PacketBuilder::ip(match self.id {
             ConnectionId::V4 {
                 local_addr,
@@ -194,7 +210,7 @@ impl Connection {
         .tcp(
             self.id.local_port(),
             self.id.remote_port(),
-            self.snd_nxt,
+            self.iss,
             self.snd_wnd,
         )
         .syn()
@@ -204,18 +220,7 @@ impl Connection {
 
         res.write(&mut res_buf, &[])?;
 
-        return Ok(Some(res_len));
-    }
-
-    pub fn receive(
-        &mut self,
-        hdr: &TcpHeader,
-        mut res_buf: &mut [u8],
-    ) -> Result<Option<usize>> {
-        if hdr.ack {
-            return self.receive_ack(&hdr, &mut res_buf);
-        }
-        Ok(None)
+        Ok(Some(res_len))
     }
 
     fn receive_ack(
@@ -223,28 +228,90 @@ impl Connection {
         hdr: &TcpHeader,
         mut res_buf: &mut [u8],
     ) -> Result<Option<usize>> {
-        if !self.acceptable_ack(hdr) {
-            if self.state.is_non_sync() {
-                // TODO: RST, close connection?
-                // <SEQ=SEG.ACK><CTL=RST>
-            } else {
-                // TODO:
-                // send an empty acknowledgment segment containing the current
-                // send-sequence number and an acknowledgment indicating the
-                // next sequence number expected to be received
+        match self.state {
+            TcpState::SynReceived => {
+                if self.acceptable_ack(hdr) {
+                    // enter ESTABLISHED state and continue processing
+                    self.state = TcpState::Established;
+                    self.receive_ack_established(hdr, &mut res_buf)
+                } else {
+                    self.send_rst(
+                        hdr.acknowledgment_number,
+                        &mut res_buf,
+                        "Unacceptable ACK",
+                    )
+                }
             }
+            TcpState::Established => {
+                if self.acceptable_ack(hdr) {
+                    self.receive_ack_established(hdr, &mut res_buf)
+                } else {
+                    // TODO:
+                    // If the ACK is a duplicate (SEG.ACK < SND.UNA),
+                    // it can be ignored.
+                    // If the ACK acks something not yet sent (SEG.ACK > SND.NXT) then send an ACK,
+                    // drop the segment, and return.
+                    unimplemented!()
+                }
+            }
+            _ => unimplemented!(),
         }
-        if self.state == TcpState::SynReceived {
-            self.state = TcpState::Established;
-        }
-        self.snd_una = hdr.acknowledgment_number;
+    }
 
+    fn receive_ack_established(
+        &mut self,
+        hdr: &TcpHeader,
+        mut res_buf: &mut [u8],
+    ) -> Result<Option<usize>> {
+        self.snd_una = hdr.acknowledgment_number;
+        // TODO: remove acknowledged segments from the retransmission queue
+        // TODO: the send window should be updated
         Ok(None)
     }
 
-    fn send_rst(&mut self, mut res_buf: &mut [u8]) -> Result<Option<usize>> {
-        // TODO:
-        Ok(None)
+    fn send_rst(
+        &self,
+        seq_num: u32,
+        mut res_buf: &mut [u8],
+        reason: &str,
+    ) -> Result<Option<usize>> {
+        println!("Sending RST - State: {} - Reason: {}", self.state, reason);
+        Connection::send_rst_packet(&self.id, seq_num, &mut res_buf)
+    }
+
+    pub fn send_rst_packet(
+        conn_id: &ConnectionId,
+        seq_num: u32,
+        mut res_buf: &mut [u8],
+    ) -> Result<Option<usize>> {
+        let res = PacketBuilder::ip(match conn_id {
+            ConnectionId::V4 {
+                local_addr,
+                remote_addr,
+                ..
+            } => IpHeader::Version4(Ipv4Header::new(
+                0,
+                64,
+                IpTrafficClass::Tcp,
+                local_addr.octets(),
+                remote_addr.octets(),
+            )),
+            ConnectionId::V6 {
+                local_addr: _,
+                remote_addr: _,
+                ..
+            } => unimplemented!(
+            "Ipv6Header is a pain to create - the etherparse API is lacking"
+          ),
+        })
+        .tcp(conn_id.local_port(), conn_id.remote_port(), seq_num, 0)
+        .rst();
+
+        let res_len = res.size(0);
+
+        res.write(&mut res_buf, &[])?;
+
+        return Ok(Some(res_len));
     }
 
     fn acceptable_ack(&self, hdr: &TcpHeader) -> bool {

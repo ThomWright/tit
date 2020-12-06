@@ -21,30 +21,46 @@ impl Tcp {
 
     pub fn receive(
         &mut self,
-        ip_header: &IpHeader,
-        tcp_header: &TcpHeader,
+        ip_hdr: &IpHeader,
+        tcp_hdr: &TcpHeader,
         payload: &[u8],
         // TODO: we don't want to just send this, we need to remember it in case we need to retransmit it
         mut res_buf: &mut [u8],
     ) -> Result<Option<usize>> {
-        Tcp::verify_checksum(ip_header, tcp_header, payload)?;
+        Tcp::verify_checksum(ip_hdr, tcp_hdr, payload)?;
 
-        let conn_id = ConnectionId::from_incoming(&ip_header, &tcp_header);
+        let conn_id = ConnectionId::from_incoming(&ip_hdr, &tcp_hdr);
+
+        // TODO:
+        // if CLOSED (no matching socket in LISTEN state):
+        //   if RST: discard
+        //   else:
+        //     if ACK: <SEQ=SEG.ACK><CTL=RST>
+        //     else: <SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>
 
         match self.connections.entry(conn_id) {
             Entry::Occupied(mut c) => {
-                c.get_mut().receive(&tcp_header, &mut res_buf)
+                c.get_mut().receive(&tcp_hdr, &mut res_buf)
             }
             Entry::Vacant(entry) => {
-                match Connection::new(conn_id, &tcp_header, &self.seq_gen) {
-                    Some(conn) => {
-                        let conn = entry.insert(conn);
-                        conn.send_syn_ack(&mut res_buf)
-                    }
-                    None => {
-                        // TODO: RST?
-                        Ok(None)
-                    }
+                // Think of this as the initial LISTEN state
+                if tcp_hdr.rst {
+                    Ok(None)
+                } else if tcp_hdr.ack {
+                    Connection::send_rst_packet(
+                        &conn_id,
+                        tcp_hdr.acknowledgment_number,
+                        &mut res_buf,
+                    )
+                } else if !tcp_hdr.syn {
+                    Ok(None)
+                } else {
+                    let conn = entry.insert(Connection::new(
+                        conn_id,
+                        &tcp_hdr,
+                        &self.seq_gen,
+                    ));
+                    conn.send_syn_ack(&mut res_buf)
                 }
             }
         }
@@ -52,21 +68,21 @@ impl Tcp {
 
     // TODO: test this works as I expect!
     fn verify_checksum(
-        ip_header: &IpHeader,
-        tcp_header: &TcpHeader,
+        ip_hdr: &IpHeader,
+        tcp_hdr: &TcpHeader,
         payload: &[u8],
     ) -> Result<()> {
-        match ip_header {
+        match ip_hdr {
             IpHeader::Version4(hdr) => {
-                if tcp_header.calc_checksum_ipv4(hdr, &payload)?
-                    != tcp_header.checksum
+                if tcp_hdr.calc_checksum_ipv4(hdr, &payload)?
+                    != tcp_hdr.checksum
                 {
                     return Err(TitError::ChecksumDifference);
                 }
             }
             IpHeader::Version6(hdr) => {
-                if tcp_header.calc_checksum_ipv6(hdr, &payload)?
-                    != tcp_header.checksum
+                if tcp_hdr.calc_checksum_ipv6(hdr, &payload)?
+                    != tcp_hdr.checksum
                 {
                     return Err(TitError::ChecksumDifference);
                 }
@@ -120,17 +136,13 @@ mod tests {
             Some(Ipv4Header::SERIALIZED_SIZE + TCP_MINIMUM_HEADER_SIZE),
             "response length should be size of IP+TCP headers"
         );
-        let res_headers =
+        let res_hdrs =
             PacketHeaders::from_ip_slice(&res_buf[..res_len.unwrap()]).unwrap();
 
-        assert_eq!(
-            res_headers.payload.len(),
-            0,
-            "should respond with no payload"
-        );
-        // let res_ip_hdr = res_headers.ip.unwrap();
+        assert_eq!(res_hdrs.payload.len(), 0, "should respond with no payload");
+        // let res_ip_hdr = res_hdrs.ip.unwrap();
         // TODO: assert we're responding to/from the correct IP
-        let res_tcp_hdr = res_headers.transport.unwrap().tcp().unwrap();
+        let res_tcp_hdr = res_hdrs.transport.unwrap().tcp().unwrap();
         assert_eq!(res_tcp_hdr.syn, true, "should respond with a SYN");
         assert_eq!(res_tcp_hdr.ack, true, "should respond with an ACK");
         assert_eq!(
