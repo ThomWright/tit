@@ -124,6 +124,8 @@ impl Display for ConnectionId {
     }
 }
 
+#[allow(dead_code)]
+#[derive(Debug, PartialEq, Eq)]
 enum TcpState {
     /// Represents waiting for a connection request from any remote
     /// TCP and port.
@@ -162,7 +164,22 @@ enum TcpState {
     /// termination request.
     TimeWait,
     /// Represents no connection state at all.
+    ///
+    /// CLOSED is fictional because it represents the state when there is
+    /// no TCB, and therefore, no connection.
     Closed,
+}
+
+impl TcpState {
+    /// Is this a non-synchronised state?
+    fn is_non_sync(&self) -> bool {
+        match self {
+            TcpState::Listen | TcpState::SynSent | TcpState::SynReceived => {
+                true
+            }
+            _ => false,
+        }
+    }
 }
 
 /// In the spec this is called a Transmission Control Block (TCB)
@@ -193,14 +210,19 @@ enum TcpState {
 /// 1. old sequence numbers which have been acknowledged
 /// 2. sequence numbers allowed for new reception
 /// 3. future sequence numbers which are not yet allowed
+#[allow(dead_code)]
 struct Connection {
     id: ConnectionId,
 
     state: TcpState,
 
     /// Send unacknowledged
+    ///
+    /// Oldest unacknowledged sequence number
     snd_una: u32,
     /// Send next
+    ///
+    /// Next sequence number to be sent
     snd_nxt: u32,
     /// Send window
     snd_wnd: u16,
@@ -214,6 +236,9 @@ struct Connection {
     iss: u32,
 
     /// Receive next
+    ///
+    /// Next sequence number expected on an incoming segments, and
+    /// is the left or lower edge of the receive window
     rcv_nxt: u32,
     /// Receive window
     rcv_wnd: u16,
@@ -223,28 +248,24 @@ struct Connection {
     irs: u32,
 }
 
-// impl Default for Connection {
-//     fn default() -> Self {
-//         Connection {
-//             state: TcpState::Closed,
-//             snd_una: 0,
-//             snd_nxt: 0,
-//             snd_wnd: 0,
-//             snd_up: false,
-//             snd_wl1: 0,
-//             snd_wl2: 0,
-//             iss: 0,
-//             rcv_nxt: 0,
-//             rcv_wnd: 0,
-//             rcv_up: false,
-//             irs: 0,
-//         }
-//     }
-// }
-
 impl Connection {
-    fn new_incoming(id: ConnectionId, hdr: &TcpHeader, iss: u32) -> Connection {
-        Connection {
+    fn new(
+        id: ConnectionId,
+        hdr: &TcpHeader,
+        seq_gen: &SeqGen,
+    ) -> Option<Connection> {
+        if hdr.rst {
+            return None;
+        }
+        if hdr.ack {
+            // TODO: send RST
+            // <SEQ=SEG.ACK><CTL=RST>
+        }
+        if !hdr.syn {
+            return None;
+        }
+        let iss = seq_gen.gen_iss();
+        Some(Connection {
             id,
             state: TcpState::SynReceived,
             snd_una: iss,
@@ -258,10 +279,16 @@ impl Connection {
             rcv_wnd: hdr.window_size,
             rcv_up: false,
             irs: hdr.sequence_number,
-        }
+        })
     }
 
-    fn syn(&self, mut res_buf: &mut [u8]) -> Result<Option<usize>> {
+    fn send_syn_ack(
+        &mut self,
+        mut res_buf: &mut [u8],
+    ) -> Result<Option<usize>> {
+        // we need our SYN to be ACK'ed
+        self.snd_nxt = self.snd_nxt.wrapping_add(1);
+
         let res = PacketBuilder::ip(match self.id {
             ConnectionId::V4 {
                 local_addr,
@@ -297,18 +324,88 @@ impl Connection {
 
         return Ok(Some(res_len));
     }
+
+    fn receive(
+        &mut self,
+        hdr: &TcpHeader,
+        mut res_buf: &mut [u8],
+    ) -> Result<Option<usize>> {
+        if hdr.ack {
+            return self.receive_ack(&hdr, &mut res_buf);
+        }
+        Ok(None)
+    }
+
+    fn receive_ack(
+        &mut self,
+        hdr: &TcpHeader,
+        mut res_buf: &mut [u8],
+    ) -> Result<Option<usize>> {
+        if !self.acceptable_ack(hdr) {
+            if self.state.is_non_sync() {
+                // TODO: RST, close connection?
+                // <SEQ=SEG.ACK><CTL=RST>
+            } else {
+                // TODO:
+                // send an empty acknowledgment segment containing the current
+                // send-sequence number and an acknowledgment indicating the
+                // next sequence number expected to be received
+            }
+        }
+        if self.state == TcpState::SynReceived {
+            self.state = TcpState::Established;
+        }
+        self.snd_una = hdr.acknowledgment_number;
+
+        Ok(None)
+    }
+
+    fn send_rst(&mut self, mut res_buf: &mut [u8]) -> Result<Option<usize>> {
+        // TODO:
+        Ok(None)
+    }
+
+    fn acceptable_ack(&self, hdr: &TcpHeader) -> bool {
+        acceptable_ack(self.snd_una, hdr.acknowledgment_number, self.snd_nxt)
+    }
+}
+
+/// Is SEG.ACK acceptable, given SND.UNA and SND.NXT?
+///
+/// This wraps around the u32 number space.
+///
+/// `SND.UNA < SEG.ACK =< SND.NXT`
+///
+/// ```txt
+/// ----------|----------|----------
+///        SND.UNA    SND.NXT
+/// ```
+fn acceptable_ack(snd_una: u32, ack_num: u32, snd_nxt: u32) -> bool {
+    is_between_wrapped(snd_una, ack_num, snd_nxt.wrapping_add(1))
+}
+
+fn wrapping_lt(lhs: u32, rhs: u32) -> bool {
+    lhs.wrapping_sub(rhs) > (1 << 31)
+}
+
+/// Stolen from: https://github.com/jonhoo/rust-tcp
+/// Which references: https://tools.ietf.org/html/rfc1323
+fn is_between_wrapped(start: u32, x: u32, end: u32) -> bool {
+    wrapping_lt(start, x) && wrapping_lt(x, end)
 }
 
 type Connections = HashMap<ConnectionId, Connection>;
 
 pub struct Tcp {
     connections: Connections,
+    seq_gen: SeqGen,
 }
 
 impl Tcp {
     pub fn new() -> Tcp {
         Tcp {
             connections: HashMap::default(),
+            seq_gen: SeqGen {},
         }
     }
 
@@ -324,24 +421,23 @@ impl Tcp {
 
         let conn_id = ConnectionId::from_incoming(&ip_header, &tcp_header);
 
-        if tcp_header.syn {
-            let conn = match self.connections.entry(conn_id) {
-                Entry::Occupied(c) => c.into_mut(),
-                Entry::Vacant(entry) => {
-                    let conn = Connection::new_incoming(
-                        conn_id,
-                        &tcp_header,
-                        Tcp::gen_iss(),
-                    );
-
-                    entry.insert(conn)
+        match self.connections.entry(conn_id) {
+            Entry::Occupied(mut c) => {
+                c.get_mut().receive(&tcp_header, &mut res_buf)
+            }
+            Entry::Vacant(entry) => {
+                match Connection::new(conn_id, &tcp_header, &self.seq_gen) {
+                    Some(conn) => {
+                        let conn = entry.insert(conn);
+                        conn.send_syn_ack(&mut res_buf)
+                    }
+                    None => {
+                        // TODO: RST?
+                        Ok(None)
+                    }
                 }
-            };
-
-            return conn.syn(&mut res_buf);
+            }
         }
-        // TODO: handle first ack
-        Ok(None)
     }
 
     // TODO: test this works as I expect!
@@ -368,8 +464,13 @@ impl Tcp {
         };
         Ok(())
     }
+}
 
-    fn gen_iss() -> u32 {
+struct SeqGen {
+    // TODO: some random number generator?
+}
+impl SeqGen {
+    fn gen_iss(&self) -> u32 {
         0 // FIXME: generate a secure initial sequence number
     }
 }
@@ -418,14 +519,80 @@ mod tests {
             "should respond with no payload"
         );
         // let res_ip_hdr = res_headers.ip.unwrap();
-        let res_trans_hdr = res_headers.transport.unwrap().tcp().unwrap();
-        assert_eq!(res_trans_hdr.syn, true, "should respond with a SYN/ACK");
-        assert_eq!(res_trans_hdr.ack, true, "should respond with a SYN/ACK");
+        // TODO: assert we're responding to/from the correct IP
+        let res_tcp_hdr = res_headers.transport.unwrap().tcp().unwrap();
+        assert_eq!(res_tcp_hdr.syn, true, "should respond with a SYN");
+        assert_eq!(res_tcp_hdr.ack, true, "should respond with an ACK");
         assert_eq!(
-            res_trans_hdr.acknowledgment_number,
+            res_tcp_hdr.acknowledgment_number,
             req_tcp_hdr.sequence_number + 1,
             "response should acknowledge the correct sequence number"
         );
+    }
+
+    #[test]
+    fn three_way() {
+        let mut tcp = Tcp::new();
+
+        // SYN ->
+        let mut syn_res_buf = [0u8; 1500];
+        let syn_res_len = send_syn(&mut tcp, &mut syn_res_buf);
+
+        // SYN/ACK <-
+        let syn_ack_hdr =
+            PacketHeaders::from_ip_slice(&syn_res_buf[..syn_res_len.unwrap()])
+                .unwrap()
+                .transport
+                .unwrap()
+                .tcp()
+                .unwrap();
+
+        // ACK ->
+        let mut ack_res_buf = [0u8; 1500];
+        let ack_res_len = send_ack(&mut tcp, &syn_ack_hdr, &mut ack_res_buf);
+
+        assert_eq!(ack_res_len, None, "should be no response to the ACK");
+
+        // TODO: assert state of `tcp`
+    }
+
+    fn send_syn(tcp: &mut Tcp, mut res_buf: &mut [u8]) -> Option<usize> {
+        let payload = [];
+        let (req_ip_hdr, mut req_tcp_hdr) = create_headers(&payload);
+        req_tcp_hdr.syn = true;
+        req_tcp_hdr.checksum = req_tcp_hdr
+            .calc_checksum_ipv4(&req_ip_hdr, &payload)
+            .unwrap();
+
+        tcp.receive(
+            &IpHeader::Version4(req_ip_hdr),
+            &req_tcp_hdr,
+            &payload,
+            &mut res_buf,
+        )
+        .unwrap()
+    }
+
+    fn send_ack(
+        tcp: &mut Tcp,
+        hdr_to_ack: &TcpHeader,
+        mut res_buf: &mut [u8],
+    ) -> Option<usize> {
+        let payload = [];
+        let (req_ip_hdr, mut req_tcp_hdr) = create_headers(&payload);
+        req_tcp_hdr.ack = true;
+        req_tcp_hdr.acknowledgment_number = hdr_to_ack.sequence_number + 1;
+        req_tcp_hdr.checksum = req_tcp_hdr
+            .calc_checksum_ipv4(&req_ip_hdr, &payload)
+            .unwrap();
+
+        tcp.receive(
+            &IpHeader::Version4(req_ip_hdr),
+            &req_tcp_hdr,
+            &payload,
+            &mut res_buf,
+        )
+        .unwrap()
     }
 
     fn create_headers(payload: &[u8]) -> (Ipv4Header, TcpHeader) {
@@ -440,5 +607,53 @@ mod tests {
         );
 
         (ip_hdr, tcp_hdr)
+    }
+
+    #[test]
+    fn acceptable_ack_nowrap_simple_true() {
+        let snd_una = 10;
+        let snd_next = 20;
+        let ack_num = 15;
+        assert_eq!(acceptable_ack(snd_una, ack_num, snd_next), true);
+    }
+
+    #[test]
+    fn acceptable_ack_nowrap_simple_false() {
+        let snd_una = 10;
+        let snd_next = 20;
+        let ack_num = 25;
+        assert_eq!(acceptable_ack(snd_una, ack_num, snd_next), false);
+    }
+
+    #[test]
+    fn acceptable_ack_nowrap_una_ack_eq() {
+        let snd_una = 10;
+        let snd_next = 20;
+        let ack_num = 10;
+        assert_eq!(acceptable_ack(snd_una, ack_num, snd_next), false);
+    }
+
+    #[test]
+    fn acceptable_ack_nowrap_nxt_ack_eq() {
+        let snd_una = 10;
+        let snd_next = 20;
+        let ack_num = 20;
+        assert_eq!(acceptable_ack(snd_una, ack_num, snd_next), true);
+    }
+
+    #[test]
+    fn acceptable_ack_wrap_ack_under() {
+        let snd_una = std::u32::MAX - 5;
+        let snd_next = 5;
+        let ack_num = std::u32::MAX - 1;
+        assert_eq!(acceptable_ack(snd_una, ack_num, snd_next), true);
+    }
+
+    #[test]
+    fn acceptable_ack_wrap_ack_over() {
+        let snd_una = std::u32::MAX - 5;
+        let snd_next = 5;
+        let ack_num = 1;
+        assert_eq!(acceptable_ack(snd_una, ack_num, snd_next), true);
     }
 }
