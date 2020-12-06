@@ -2,7 +2,8 @@ use etherparse::{IpHeader, TcpHeader};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
-use super::connection::{Connection, ConnectionId};
+use super::connection::Connection;
+use super::connection_id::ConnectionId;
 use crate::errors::{Result, TitError};
 
 pub struct Tcp {
