@@ -1,13 +1,12 @@
 use etherparse::{
     IpHeader, IpTrafficClass, Ipv4Header, PacketBuilder, TcpHeader,
 };
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
 use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-use crate::errors::{Result, TitError};
+use super::tcp::SeqGen;
+use crate::errors::Result;
 use crate::ip_utils::IpPair;
 
 /// From the spec:
@@ -211,7 +210,7 @@ impl TcpState {
 /// 2. sequence numbers allowed for new reception
 /// 3. future sequence numbers which are not yet allowed
 #[allow(dead_code)]
-struct Connection {
+pub struct Connection {
     id: ConnectionId,
 
     state: TcpState,
@@ -249,7 +248,7 @@ struct Connection {
 }
 
 impl Connection {
-    fn new(
+    pub fn new(
         id: ConnectionId,
         hdr: &TcpHeader,
         seq_gen: &SeqGen,
@@ -282,7 +281,7 @@ impl Connection {
         })
     }
 
-    fn send_syn_ack(
+    pub fn send_syn_ack(
         &mut self,
         mut res_buf: &mut [u8],
     ) -> Result<Option<usize>> {
@@ -306,8 +305,8 @@ impl Connection {
                 remote_addr: _,
                 ..
             } => unimplemented!(
-              "Ipv6Header is a pain to create - the etherparse API is lacking"
-            ),
+            "Ipv6Header is a pain to create - the etherparse API is lacking"
+          ),
         })
         .tcp(
             self.id.local_port(),
@@ -325,7 +324,7 @@ impl Connection {
         return Ok(Some(res_len));
     }
 
-    fn receive(
+    pub fn receive(
         &mut self,
         hdr: &TcpHeader,
         mut res_buf: &mut [u8],
@@ -394,220 +393,9 @@ fn is_between_wrapped(start: u32, x: u32, end: u32) -> bool {
     wrapping_lt(start, x) && wrapping_lt(x, end)
 }
 
-type Connections = HashMap<ConnectionId, Connection>;
-
-pub struct Tcp {
-    connections: Connections,
-    seq_gen: SeqGen,
-}
-
-impl Tcp {
-    pub fn new() -> Tcp {
-        Tcp {
-            connections: HashMap::default(),
-            seq_gen: SeqGen {},
-        }
-    }
-
-    pub fn receive(
-        &mut self,
-        ip_header: &IpHeader,
-        tcp_header: &TcpHeader,
-        payload: &[u8],
-        // TODO: we don't want to just send this, we need to remember it in case we need to retransmit it
-        mut res_buf: &mut [u8],
-    ) -> Result<Option<usize>> {
-        Tcp::verify_checksum(ip_header, tcp_header, payload)?;
-
-        let conn_id = ConnectionId::from_incoming(&ip_header, &tcp_header);
-
-        match self.connections.entry(conn_id) {
-            Entry::Occupied(mut c) => {
-                c.get_mut().receive(&tcp_header, &mut res_buf)
-            }
-            Entry::Vacant(entry) => {
-                match Connection::new(conn_id, &tcp_header, &self.seq_gen) {
-                    Some(conn) => {
-                        let conn = entry.insert(conn);
-                        conn.send_syn_ack(&mut res_buf)
-                    }
-                    None => {
-                        // TODO: RST?
-                        Ok(None)
-                    }
-                }
-            }
-        }
-    }
-
-    // TODO: test this works as I expect!
-    fn verify_checksum(
-        ip_header: &IpHeader,
-        tcp_header: &TcpHeader,
-        payload: &[u8],
-    ) -> Result<()> {
-        match ip_header {
-            IpHeader::Version4(hdr) => {
-                if tcp_header.calc_checksum_ipv4(hdr, &payload)?
-                    != tcp_header.checksum
-                {
-                    return Err(TitError::ChecksumDifference);
-                }
-            }
-            IpHeader::Version6(hdr) => {
-                if tcp_header.calc_checksum_ipv6(hdr, &payload)?
-                    != tcp_header.checksum
-                {
-                    return Err(TitError::ChecksumDifference);
-                }
-            }
-        };
-        Ok(())
-    }
-}
-
-struct SeqGen {
-    // TODO: some random number generator?
-}
-impl SeqGen {
-    fn gen_iss(&self) -> u32 {
-        0 // FIXME: generate a secure initial sequence number
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use etherparse::{
-        IpHeader, IpTrafficClass, Ipv4Header, PacketHeaders, SerializedSize,
-        TcpHeader, TCP_MINIMUM_HEADER_SIZE,
-    };
-
-    #[test]
-    fn original_syn() {
-        let mut tcp = Tcp::new();
-
-        let payload = [];
-        let (req_ip_hdr, mut req_tcp_hdr) = create_headers(&payload);
-
-        req_tcp_hdr.syn = true;
-        req_tcp_hdr.checksum = req_tcp_hdr
-            .calc_checksum_ipv4(&req_ip_hdr, &payload)
-            .unwrap();
-
-        let mut res_buf = [0u8; 1500];
-        let res_len = tcp
-            .receive(
-                &IpHeader::Version4(req_ip_hdr),
-                &req_tcp_hdr,
-                &payload,
-                &mut res_buf,
-            )
-            .unwrap();
-
-        assert_eq!(
-            res_len,
-            Some(Ipv4Header::SERIALIZED_SIZE + TCP_MINIMUM_HEADER_SIZE),
-            "response length should be size of IP+TCP headers"
-        );
-        let res_headers =
-            PacketHeaders::from_ip_slice(&res_buf[..res_len.unwrap()]).unwrap();
-
-        assert_eq!(
-            res_headers.payload.len(),
-            0,
-            "should respond with no payload"
-        );
-        // let res_ip_hdr = res_headers.ip.unwrap();
-        // TODO: assert we're responding to/from the correct IP
-        let res_tcp_hdr = res_headers.transport.unwrap().tcp().unwrap();
-        assert_eq!(res_tcp_hdr.syn, true, "should respond with a SYN");
-        assert_eq!(res_tcp_hdr.ack, true, "should respond with an ACK");
-        assert_eq!(
-            res_tcp_hdr.acknowledgment_number,
-            req_tcp_hdr.sequence_number + 1,
-            "response should acknowledge the correct sequence number"
-        );
-    }
-
-    #[test]
-    fn three_way() {
-        let mut tcp = Tcp::new();
-
-        // SYN ->
-        let mut syn_res_buf = [0u8; 1500];
-        let syn_res_len = send_syn(&mut tcp, &mut syn_res_buf);
-
-        // SYN/ACK <-
-        let syn_ack_hdr =
-            PacketHeaders::from_ip_slice(&syn_res_buf[..syn_res_len.unwrap()])
-                .unwrap()
-                .transport
-                .unwrap()
-                .tcp()
-                .unwrap();
-
-        // ACK ->
-        let mut ack_res_buf = [0u8; 1500];
-        let ack_res_len = send_ack(&mut tcp, &syn_ack_hdr, &mut ack_res_buf);
-
-        assert_eq!(ack_res_len, None, "should be no response to the ACK");
-
-        // TODO: assert state of `tcp`
-    }
-
-    fn send_syn(tcp: &mut Tcp, mut res_buf: &mut [u8]) -> Option<usize> {
-        let payload = [];
-        let (req_ip_hdr, mut req_tcp_hdr) = create_headers(&payload);
-        req_tcp_hdr.syn = true;
-        req_tcp_hdr.checksum = req_tcp_hdr
-            .calc_checksum_ipv4(&req_ip_hdr, &payload)
-            .unwrap();
-
-        tcp.receive(
-            &IpHeader::Version4(req_ip_hdr),
-            &req_tcp_hdr,
-            &payload,
-            &mut res_buf,
-        )
-        .unwrap()
-    }
-
-    fn send_ack(
-        tcp: &mut Tcp,
-        hdr_to_ack: &TcpHeader,
-        mut res_buf: &mut [u8],
-    ) -> Option<usize> {
-        let payload = [];
-        let (req_ip_hdr, mut req_tcp_hdr) = create_headers(&payload);
-        req_tcp_hdr.ack = true;
-        req_tcp_hdr.acknowledgment_number = hdr_to_ack.sequence_number + 1;
-        req_tcp_hdr.checksum = req_tcp_hdr
-            .calc_checksum_ipv4(&req_ip_hdr, &payload)
-            .unwrap();
-
-        tcp.receive(
-            &IpHeader::Version4(req_ip_hdr),
-            &req_tcp_hdr,
-            &payload,
-            &mut res_buf,
-        )
-        .unwrap()
-    }
-
-    fn create_headers(payload: &[u8]) -> (Ipv4Header, TcpHeader) {
-        let tcp_hdr = TcpHeader::new(4321, 80, 0, 1024);
-
-        let ip_hdr = Ipv4Header::new(
-            tcp_hdr.header_len() + payload.len() as u16,
-            64,
-            IpTrafficClass::Tcp,
-            [192, 168, 0, 1],
-            [10, 0, 0, 10],
-        );
-
-        (ip_hdr, tcp_hdr)
-    }
 
     #[test]
     fn acceptable_ack_nowrap_simple_true() {
