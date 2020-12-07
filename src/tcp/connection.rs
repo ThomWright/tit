@@ -1,5 +1,6 @@
 use etherparse::{
-    IpHeader, IpTrafficClass, Ipv4Header, PacketBuilder, TcpHeader,
+    IpHeader, IpTrafficClass, Ipv4Header, PacketBuilder, PacketBuilderStep,
+    TcpHeader,
 };
 use std::fmt;
 
@@ -9,7 +10,7 @@ use crate::errors::Result;
 
 #[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq)]
-enum TcpState {
+enum State {
     /// Represents waiting for a connection request from any remote
     /// TCP and port.
     Listen,
@@ -53,19 +54,7 @@ enum TcpState {
     Closed,
 }
 
-impl TcpState {
-    /// Is this a non-synchronised state?
-    fn is_non_sync(&self) -> bool {
-        match self {
-            TcpState::Listen | TcpState::SynSent | TcpState::SynReceived => {
-                true
-            }
-            _ => false,
-        }
-    }
-}
-
-impl fmt::Display for TcpState {
+impl fmt::Display for State {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self)
     }
@@ -103,7 +92,7 @@ impl fmt::Display for TcpState {
 pub struct Connection {
     id: ConnectionId,
 
-    state: TcpState,
+    state: State,
 
     /// Send unacknowledged
     ///
@@ -146,7 +135,7 @@ impl Connection {
         let iss = seq_gen.gen_iss();
         Connection {
             id,
-            state: TcpState::SynReceived,
+            state: State::SynReceived,
             snd_una: iss,
             snd_nxt: iss.wrapping_add(1),
             snd_wnd: 1024,
@@ -183,11 +172,139 @@ impl Connection {
         // TODO: eighth, check the FIN bit
     }
 
+    fn receive_ack(
+        &mut self,
+        hdr: &TcpHeader,
+        mut res_buf: &mut [u8],
+    ) -> Result<Option<usize>> {
+        if self.state == State::SynReceived {
+            if self.acceptable_ack(hdr) {
+                // enter ESTABLISHED state and continue processing
+                self.state = State::Established;
+            // TODO:
+            // SND.WND <- SEG.WND
+            // SND.WL1 <- SEG.SEQ
+            // SND.WL2 <- SEG.ACK
+            } else {
+                return self.send_rst(
+                    hdr.acknowledgment_number,
+                    &mut res_buf,
+                    "unacceptable ACK",
+                );
+            }
+        }
+
+        match self.state {
+            State::Established
+            | State::FinWait1
+            | State::FinWait2
+            | State::CloseWait
+            | State::Closing => {
+                if self.acceptable_ack(hdr) {
+                    self.snd_una = hdr.acknowledgment_number;
+                    // TODO: remove acknowledged segments from the retransmission queue
+                    // TODO: the send window should be updated
+                }
+            }
+            _ => {}
+        }
+
+        if self.state == State::FinWait1 {
+            // TODO: if our FIN is now acknowledged then enter FIN-WAIT-2 and continue processing in that state
+        }
+        if self.state == State::FinWait2 {
+            // TODO: if the retransmission queue is empty, the user's CLOSE can be acknowledged ("ok") but do not delete the TCB
+        }
+        if self.state == State::Closing {
+            // TODO: if the ACK acknowledges our FIN then enter the TIME-WAIT state, otherwise ignore the segment
+        }
+
+        match self.state {
+            State::Established
+            | State::FinWait1
+            | State::FinWait2
+            | State::CloseWait
+            | State::Closing
+            | State::LastAck
+            | State::TimeWait => {
+                if !self.acceptable_ack(hdr) {
+                    // If the ACK is a duplicate (SEG.ACK < SND.UNA), it can be ignored.
+
+                    // If the ACK acks something not yet sent (SEG.ACK > SND.NXT) then send an ACK,
+                    // drop the segment, and return.
+                    if wrapping_lt(self.snd_nxt, hdr.acknowledgment_number) {
+                        // If the connection is in a synchronized state (ESTABLISHED,
+                        // FIN-WAIT-1, FIN-WAIT-2, CLOSE-WAIT, CLOSING, LAST-ACK, TIME-WAIT),
+                        // any unacceptable segment (out of window sequence number or
+                        // unacceptible acknowledgment number) must elicit only an empty
+                        // acknowledgment segment containing the current send-sequence number
+                        // and an acknowledgment indicating the next sequence number expected
+                        // to be received, and the connection remains in the same state.
+                        return self.send_ack(&mut res_buf);
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        Ok(None)
+    }
+
     pub fn send_syn_ack(
         &mut self,
         mut res_buf: &mut [u8],
     ) -> Result<Option<usize>> {
-        let res = PacketBuilder::ip(match self.id {
+        let res = self
+            .create_packet_builder()
+            .tcp(
+                self.id.local_port(),
+                self.id.remote_port(),
+                self.iss,
+                self.snd_wnd,
+            )
+            .syn()
+            .ack(self.rcv_nxt);
+
+        let res_len = res.size(0);
+
+        res.write(&mut res_buf, &[])?;
+
+        Ok(Some(res_len))
+    }
+
+    pub fn send_ack(
+        &mut self,
+        mut res_buf: &mut [u8],
+    ) -> Result<Option<usize>> {
+        let res = self
+            .create_packet_builder()
+            .tcp(
+                self.id.local_port(),
+                self.id.remote_port(),
+                self.snd_nxt,
+                self.snd_wnd,
+            )
+            .ack(self.rcv_nxt);
+
+        let res_len = res.size(0);
+
+        res.write(&mut res_buf, &[])?;
+
+        Ok(Some(res_len))
+    }
+
+    fn send_rst(
+        &self,
+        seq_num: u32,
+        mut res_buf: &mut [u8],
+        reason: &str,
+    ) -> Result<Option<usize>> {
+        println!("Sending RST - State: {} - Reason: {}", self.state, reason);
+        Connection::send_rst_packet(&self.id, seq_num, &mut res_buf)
+    }
+
+    fn create_packet_builder(&self) -> PacketBuilderStep<IpHeader> {
+        PacketBuilder::ip(match self.id {
             ConnectionId::V4 {
                 local_addr,
                 remote_addr,
@@ -207,76 +324,6 @@ impl Connection {
             "Ipv6Header is a pain to create - the etherparse API is lacking"
           ),
         })
-        .tcp(
-            self.id.local_port(),
-            self.id.remote_port(),
-            self.iss,
-            self.snd_wnd,
-        )
-        .syn()
-        .ack(self.rcv_nxt);
-
-        let res_len = res.size(0);
-
-        res.write(&mut res_buf, &[])?;
-
-        Ok(Some(res_len))
-    }
-
-    fn receive_ack(
-        &mut self,
-        hdr: &TcpHeader,
-        mut res_buf: &mut [u8],
-    ) -> Result<Option<usize>> {
-        match self.state {
-            TcpState::SynReceived => {
-                if self.acceptable_ack(hdr) {
-                    // enter ESTABLISHED state and continue processing
-                    self.state = TcpState::Established;
-                    self.receive_ack_established(hdr, &mut res_buf)
-                } else {
-                    self.send_rst(
-                        hdr.acknowledgment_number,
-                        &mut res_buf,
-                        "Unacceptable ACK",
-                    )
-                }
-            }
-            TcpState::Established => {
-                if self.acceptable_ack(hdr) {
-                    self.receive_ack_established(hdr, &mut res_buf)
-                } else {
-                    // TODO:
-                    // If the ACK is a duplicate (SEG.ACK < SND.UNA),
-                    // it can be ignored.
-                    // If the ACK acks something not yet sent (SEG.ACK > SND.NXT) then send an ACK,
-                    // drop the segment, and return.
-                    unimplemented!()
-                }
-            }
-            _ => unimplemented!(),
-        }
-    }
-
-    fn receive_ack_established(
-        &mut self,
-        hdr: &TcpHeader,
-        mut res_buf: &mut [u8],
-    ) -> Result<Option<usize>> {
-        self.snd_una = hdr.acknowledgment_number;
-        // TODO: remove acknowledged segments from the retransmission queue
-        // TODO: the send window should be updated
-        Ok(None)
-    }
-
-    fn send_rst(
-        &self,
-        seq_num: u32,
-        mut res_buf: &mut [u8],
-        reason: &str,
-    ) -> Result<Option<usize>> {
-        println!("Sending RST - State: {} - Reason: {}", self.state, reason);
-        Connection::send_rst_packet(&self.id, seq_num, &mut res_buf)
     }
 
     pub fn send_rst_packet(
@@ -339,6 +386,8 @@ fn wrapping_lt(lhs: u32, rhs: u32) -> bool {
 
 /// Stolen from: https://github.com/jonhoo/rust-tcp
 /// Which references: https://tools.ietf.org/html/rfc1323
+///
+/// The distance between `start` and `end` must be <= 1<<31.
 fn is_between_wrapped(start: u32, x: u32, end: u32) -> bool {
     wrapping_lt(start, x) && wrapping_lt(x, end)
 }

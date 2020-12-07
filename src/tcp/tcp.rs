@@ -24,7 +24,13 @@ impl Tcp {
         ip_hdr: &IpHeader,
         tcp_hdr: &TcpHeader,
         payload: &[u8],
-        // TODO: we don't want to just send this, we need to remember it in case we need to retransmit it
+        // TODO: this API isn't going to work, we will probably want to put outgoing segments on a queue
+        // Also, from RFC1122:
+        // In general, the processing of received segments MUST be
+        // implemented to aggregate ACK segments whenever possible.
+        // For example, if the TCP is processing a series of queued
+        // segments, it MUST process them all before sending any ACK
+        // segments.
         mut res_buf: &mut [u8],
     ) -> Result<Option<usize>> {
         Tcp::verify_checksum(ip_hdr, tcp_hdr, payload)?;
@@ -113,23 +119,10 @@ mod tests {
     fn original_syn() {
         let mut tcp = Tcp::new();
 
-        let payload = [];
-        let (req_ip_hdr, mut req_tcp_hdr) = create_headers(&payload);
-
-        req_tcp_hdr.syn = true;
-        req_tcp_hdr.checksum = req_tcp_hdr
-            .calc_checksum_ipv4(&req_ip_hdr, &payload)
-            .unwrap();
+        let client_iss = 0;
 
         let mut res_buf = [0u8; 1500];
-        let res_len = tcp
-            .receive(
-                &IpHeader::Version4(req_ip_hdr),
-                &req_tcp_hdr,
-                &payload,
-                &mut res_buf,
-            )
-            .unwrap();
+        let res_len = send_syn(&mut tcp, &mut res_buf, client_iss);
 
         assert_eq!(
             res_len,
@@ -147,7 +140,7 @@ mod tests {
         assert_eq!(res_tcp_hdr.ack, true, "should respond with an ACK");
         assert_eq!(
             res_tcp_hdr.acknowledgment_number,
-            req_tcp_hdr.sequence_number + 1,
+            client_iss + 1,
             "response should acknowledge the correct sequence number"
         );
     }
@@ -156,9 +149,11 @@ mod tests {
     fn three_way() {
         let mut tcp = Tcp::new();
 
+        let client_iss = 0;
+
         // SYN ->
         let mut syn_res_buf = [0u8; 1500];
-        let syn_res_len = send_syn(&mut tcp, &mut syn_res_buf);
+        let syn_res_len = send_syn(&mut tcp, &mut syn_res_buf, client_iss);
 
         // SYN/ACK <-
         let syn_ack_hdr =
@@ -171,16 +166,39 @@ mod tests {
 
         // ACK ->
         let mut ack_res_buf = [0u8; 1500];
-        let ack_res_len = send_ack(&mut tcp, &syn_ack_hdr, &mut ack_res_buf);
+        let ack_res_len =
+            send_ack(&mut tcp, &syn_ack_hdr, &mut ack_res_buf, client_iss);
 
         assert_eq!(ack_res_len, None, "should be no response to the ACK");
 
         // TODO: assert state of `tcp`
     }
 
-    fn send_syn(tcp: &mut Tcp, mut res_buf: &mut [u8]) -> Option<usize> {
+    #[test]
+    #[ignore]
+    fn unacceptable_ack_in_state_syn_received() {
+        // TODO: should receive RST
+    }
+
+    #[test]
+    #[ignore]
+    fn unacceptable_ack_in_state_established() {
+        // TODO: should receive ACK
+    }
+
+    #[test]
+    #[ignore]
+    fn duplicate_ack_in_state_established() {
+        // TODO: should receive no response
+    }
+
+    fn send_syn(
+        tcp: &mut Tcp,
+        mut res_buf: &mut [u8],
+        seq_num: u32,
+    ) -> Option<usize> {
         let payload = [];
-        let (req_ip_hdr, mut req_tcp_hdr) = create_headers(&payload);
+        let (req_ip_hdr, mut req_tcp_hdr) = create_headers(&payload, seq_num);
         req_tcp_hdr.syn = true;
         req_tcp_hdr.checksum = req_tcp_hdr
             .calc_checksum_ipv4(&req_ip_hdr, &payload)
@@ -199,9 +217,10 @@ mod tests {
         tcp: &mut Tcp,
         hdr_to_ack: &TcpHeader,
         mut res_buf: &mut [u8],
+        seq_num: u32,
     ) -> Option<usize> {
         let payload = [];
-        let (req_ip_hdr, mut req_tcp_hdr) = create_headers(&payload);
+        let (req_ip_hdr, mut req_tcp_hdr) = create_headers(&payload, seq_num);
         req_tcp_hdr.ack = true;
         req_tcp_hdr.acknowledgment_number = hdr_to_ack.sequence_number + 1;
         req_tcp_hdr.checksum = req_tcp_hdr
@@ -217,8 +236,8 @@ mod tests {
         .unwrap()
     }
 
-    fn create_headers(payload: &[u8]) -> (Ipv4Header, TcpHeader) {
-        let tcp_hdr = TcpHeader::new(4321, 80, 0, 1024);
+    fn create_headers(payload: &[u8], seq_num: u32) -> (Ipv4Header, TcpHeader) {
+        let tcp_hdr = TcpHeader::new(4321, 80, seq_num, 1024);
 
         let ip_hdr = Ipv4Header::new(
             tcp_hdr.header_len() + payload.len() as u16,
