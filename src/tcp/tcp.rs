@@ -1,12 +1,15 @@
 use etherparse::{IpHeader, TcpHeader};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 
 use super::connection::Connection;
-use super::connection_id::ConnectionId;
+use super::socket_id::{ConnectionId, ListeningSocketId};
+use super::types::*;
 use crate::errors::{Result, TitError};
 
 pub struct Tcp {
+    listening_sockets: HashMap<SocketAddr, ListeningSocketId>,
     connections: HashMap<ConnectionId, Connection>,
     seq_gen: SeqGen,
 }
@@ -14,8 +17,20 @@ pub struct Tcp {
 impl Tcp {
     pub fn new() -> Tcp {
         Tcp {
+            listening_sockets: HashMap::default(),
             connections: HashMap::default(),
             seq_gen: SeqGen {},
+        }
+    }
+
+    pub fn listen(&mut self, socket: ListeningSocketId) -> Result<()> {
+        let ls = socket.local_socket();
+        match self.listening_sockets.entry(ls) {
+            Entry::Occupied(_) => Err(TitError::EADDRINUSE),
+            Entry::Vacant(entry) => {
+                entry.insert(socket);
+                Ok(())
+            }
         }
     }
 
@@ -37,36 +52,57 @@ impl Tcp {
 
         let conn_id = ConnectionId::from_incoming(&ip_hdr, &tcp_hdr);
 
-        // TODO:
-        // if CLOSED (no matching socket in LISTEN state):
-        //   if RST: discard
-        //   else:
-        //     if ACK: <SEQ=SEG.ACK><CTL=RST>
-        //     else: <SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>
-
         match self.connections.entry(conn_id) {
             Entry::Occupied(mut c) => {
                 c.get_mut().receive(&tcp_hdr, &mut res_buf)
             }
-            Entry::Vacant(entry) => {
-                // Think of this as the initial LISTEN state
-                if tcp_hdr.rst {
-                    Ok(None)
-                } else if tcp_hdr.ack {
-                    Connection::send_rst_packet(
-                        &conn_id,
-                        tcp_hdr.acknowledgment_number,
-                        &mut res_buf,
-                    )
-                } else if !tcp_hdr.syn {
-                    Ok(None)
+            Entry::Vacant(conn_entry) => {
+                // check we have a matching LISTEN-ing socket
+                if self
+                    .listening_sockets
+                    .get(&conn_id.local_socket())
+                    .filter(|s| s.matches(&conn_id))
+                    .is_some()
+                {
+                    if tcp_hdr.rst {
+                        Ok(None)
+                    } else if tcp_hdr.ack {
+                        Connection::send_rst_packet(
+                            &conn_id,
+                            tcp_hdr.acknowledgment_number,
+                            &mut res_buf,
+                        )
+                    } else if !tcp_hdr.syn {
+                        Ok(None)
+                    } else {
+                        let conn = conn_entry.insert(Connection::new(
+                            conn_id,
+                            &tcp_hdr,
+                            &self.seq_gen,
+                        ));
+                        conn.send_syn_ack(&mut res_buf)
+                    }
                 } else {
-                    let conn = entry.insert(Connection::new(
-                        conn_id,
-                        &tcp_hdr,
-                        &self.seq_gen,
-                    ));
-                    conn.send_syn_ack(&mut res_buf)
+                    // if CLOSED (no matching socket in LISTEN state):
+                    //   if RST: discard
+                    //   else:
+                    //     if ACK: <SEQ=SEG.ACK><CTL=RST>
+                    //     else: <SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>
+                    if tcp_hdr.rst {
+                        Ok(None)
+                    } else {
+                        if tcp_hdr.ack {
+                            Connection::send_rst_packet(
+                                &conn_id,
+                                tcp_hdr.acknowledgment_number,
+                                &mut res_buf,
+                            )
+                        } else {
+                            unimplemented!(
+                                "<SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>"
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -102,7 +138,7 @@ pub struct SeqGen {
     // TODO: some random number generator?
 }
 impl SeqGen {
-    pub fn gen_iss(&self) -> u32 {
+    pub fn gen_iss(&self) -> LocalSeqNum {
         0 // FIXME: generate a secure initial sequence number
     }
 }
@@ -114,10 +150,26 @@ mod tests {
         IpHeader, IpTrafficClass, Ipv4Header, PacketHeaders, SerializedSize,
         TcpHeader, TCP_MINIMUM_HEADER_SIZE,
     };
+    use std::net::Ipv4Addr;
+
+    const TEST_PORT: PortNum = 4434;
+
+    #[test]
+    #[ignore]
+    fn no_listning_socket() {
+        unimplemented!()
+    }
 
     #[test]
     fn original_syn() {
         let mut tcp = Tcp::new();
+        tcp.listen(ListeningSocketId::V4 {
+            remote_addr: Ipv4Addr::UNSPECIFIED,
+            remote_port: None,
+            local_addr: Ipv4Addr::LOCALHOST,
+            local_port: TEST_PORT,
+        })
+        .unwrap();
 
         let client_iss = 0;
 
@@ -148,6 +200,13 @@ mod tests {
     #[test]
     fn three_way() {
         let mut tcp = Tcp::new();
+        tcp.listen(ListeningSocketId::V4 {
+            remote_addr: Ipv4Addr::UNSPECIFIED,
+            remote_port: None,
+            local_addr: Ipv4Addr::LOCALHOST,
+            local_port: TEST_PORT,
+        })
+        .unwrap();
 
         let client_iss = 0;
 
@@ -195,7 +254,7 @@ mod tests {
     fn send_syn(
         tcp: &mut Tcp,
         mut res_buf: &mut [u8],
-        seq_num: u32,
+        seq_num: LocalSeqNum,
     ) -> Option<usize> {
         let payload = [];
         let (req_ip_hdr, mut req_tcp_hdr) = create_headers(&payload, seq_num);
@@ -217,7 +276,7 @@ mod tests {
         tcp: &mut Tcp,
         hdr_to_ack: &TcpHeader,
         mut res_buf: &mut [u8],
-        seq_num: u32,
+        seq_num: LocalSeqNum,
     ) -> Option<usize> {
         let payload = [];
         let (req_ip_hdr, mut req_tcp_hdr) = create_headers(&payload, seq_num);
@@ -236,15 +295,18 @@ mod tests {
         .unwrap()
     }
 
-    fn create_headers(payload: &[u8], seq_num: u32) -> (Ipv4Header, TcpHeader) {
-        let tcp_hdr = TcpHeader::new(4321, 80, seq_num, 1024);
+    fn create_headers(
+        payload: &[u8],
+        seq_num: LocalSeqNum,
+    ) -> (Ipv4Header, TcpHeader) {
+        let tcp_hdr = TcpHeader::new(4321, TEST_PORT, seq_num, 1024);
 
         let ip_hdr = Ipv4Header::new(
             tcp_hdr.header_len() + payload.len() as u16,
             64,
             IpTrafficClass::Tcp,
             [192, 168, 0, 1],
-            [10, 0, 0, 10],
+            [127, 0, 0, 1],
         );
 
         (ip_hdr, tcp_hdr)

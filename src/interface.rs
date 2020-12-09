@@ -13,14 +13,12 @@ pub struct Interface {
 }
 
 impl Interface {
-    pub fn new() -> Result<Interface> {
+    pub fn new(tcp_impl: tcp::Tcp) -> Result<Interface> {
         // We don't care about the 4 byte header
         let iface = tun_tap::Iface::without_packet_info(
             "tun_tit%d",
             tun_tap::Mode::Tun,
         )?;
-
-        let tcp_impl = tcp::Tcp::new();
 
         Ok(Interface {
             tun: iface,

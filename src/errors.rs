@@ -4,6 +4,8 @@ pub enum TitError {
     PacketWrite(etherparse::WriteError),
     ChecksumDifference,
     ChecksumCalcFailure(etherparse::ValueError),
+
+    EADDRINUSE,
 }
 
 impl From<std::io::Error> for TitError {

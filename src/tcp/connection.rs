@@ -4,8 +4,9 @@ use etherparse::{
 };
 use std::fmt;
 
-use super::connection_id::ConnectionId;
+use super::socket_id::ConnectionId;
 use super::tcp::SeqGen;
+use super::types::*;
 use crate::errors::Result;
 
 #[allow(dead_code)]
@@ -97,33 +98,33 @@ pub struct Connection {
     /// Send unacknowledged
     ///
     /// Oldest unacknowledged sequence number
-    snd_una: u32,
+    snd_una: LocalSeqNum,
     /// Send next
     ///
     /// Next sequence number to be sent
-    snd_nxt: u32,
+    snd_nxt: LocalSeqNum,
     /// Send window
-    snd_wnd: u16,
+    snd_wnd: WindowSize,
     /// Send urgent pointer
     snd_up: bool,
     /// Segment sequence number used for last window update
-    snd_wl1: u32,
+    snd_wl1: RemoteSeqNum,
     /// Segment acknowledgment number used for last window update
-    snd_wl2: u32,
+    snd_wl2: LocalSeqNum,
     /// Initial send sequence number
-    iss: u32,
+    iss: LocalSeqNum,
 
     /// Receive next
     ///
     /// Next sequence number expected on an incoming segments, and
     /// is the left or lower edge of the receive window
-    rcv_nxt: u32,
+    rcv_nxt: RemoteSeqNum,
     /// Receive window
-    rcv_wnd: u16,
+    rcv_wnd: WindowSize,
     /// Receive urgent pointer
     rcv_up: bool,
     /// Initial receive sequence number
-    irs: u32,
+    irs: RemoteSeqNum,
 }
 
 impl Connection {
@@ -295,7 +296,7 @@ impl Connection {
 
     fn send_rst(
         &self,
-        seq_num: u32,
+        seq_num: LocalSeqNum,
         mut res_buf: &mut [u8],
         reason: &str,
     ) -> Result<Option<usize>> {
@@ -328,7 +329,7 @@ impl Connection {
 
     pub fn send_rst_packet(
         conn_id: &ConnectionId,
-        seq_num: u32,
+        seq_num: LocalSeqNum,
         mut res_buf: &mut [u8],
     ) -> Result<Option<usize>> {
         let res = PacketBuilder::ip(match conn_id {
@@ -376,7 +377,11 @@ impl Connection {
 /// ----------|----------|----------
 ///        SND.UNA    SND.NXT
 /// ```
-fn acceptable_ack(snd_una: u32, ack_num: u32, snd_nxt: u32) -> bool {
+fn acceptable_ack(
+    snd_una: LocalSeqNum,
+    ack_num: LocalSeqNum,
+    snd_nxt: LocalSeqNum,
+) -> bool {
     is_between_wrapped(snd_una, ack_num, snd_nxt.wrapping_add(1))
 }
 
