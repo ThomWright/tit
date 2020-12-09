@@ -305,7 +305,13 @@ impl Connection {
     }
 
     fn create_packet_builder(&self) -> PacketBuilderStep<IpHeader> {
-        PacketBuilder::ip(match self.id {
+        Connection::create_packet_builder_for(&self.id)
+    }
+
+    fn create_packet_builder_for(
+        conn_id: &ConnectionId,
+    ) -> PacketBuilderStep<IpHeader> {
+        PacketBuilder::ip(match conn_id {
             ConnectionId::V4 {
                 local_addr,
                 remote_addr,
@@ -332,28 +338,27 @@ impl Connection {
         seq_num: LocalSeqNum,
         mut res_buf: &mut [u8],
     ) -> Result<Option<usize>> {
-        let res = PacketBuilder::ip(match conn_id {
-            ConnectionId::V4 {
-                local_addr,
-                remote_addr,
-                ..
-            } => IpHeader::Version4(Ipv4Header::new(
-                0,
-                64,
-                IpTrafficClass::Tcp,
-                local_addr.octets(),
-                remote_addr.octets(),
-            )),
-            ConnectionId::V6 {
-                local_addr: _,
-                remote_addr: _,
-                ..
-            } => unimplemented!(
-            "Ipv6Header is a pain to create - the etherparse API is lacking"
-          ),
-        })
-        .tcp(conn_id.local_port(), conn_id.remote_port(), seq_num, 0)
-        .rst();
+        let res = Connection::create_packet_builder_for(&conn_id)
+            .tcp(conn_id.local_port(), conn_id.remote_port(), seq_num, 0)
+            .rst();
+
+        let res_len = res.size(0);
+
+        res.write(&mut res_buf, &[])?;
+
+        return Ok(Some(res_len));
+    }
+
+    pub fn send_rst_ack_packet(
+        conn_id: &ConnectionId,
+        seq_num: LocalSeqNum,
+        ack_num: RemoteSeqNum,
+        mut res_buf: &mut [u8],
+    ) -> Result<Option<usize>> {
+        let res = Connection::create_packet_builder_for(&conn_id)
+            .tcp(conn_id.local_port(), conn_id.remote_port(), seq_num, 0)
+            .ack(ack_num)
+            .rst();
 
         let res_len = res.size(0);
 

@@ -92,14 +92,22 @@ impl Tcp {
                         Ok(None)
                     } else {
                         if tcp_hdr.ack {
+                            // <SEQ=SEG.ACK><CTL=RST>
                             Connection::send_rst_packet(
                                 &conn_id,
                                 tcp_hdr.acknowledgment_number,
                                 &mut res_buf,
                             )
                         } else {
-                            unimplemented!(
-                                "<SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>"
+                            // <SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>
+                            // SEG.LEN = the number of octets occupied by the data in the segment(counting SYN and FIN)
+                            Connection::send_rst_ack_packet(
+                                &conn_id,
+                                0,
+                                tcp_hdr.sequence_number
+                                    + segment_length(&tcp_hdr, &payload)
+                                        as RemoteSeqNum,
+                                &mut res_buf,
                             )
                         }
                     }
@@ -134,6 +142,12 @@ impl Tcp {
     }
 }
 
+fn segment_length(tcp_hdr: &TcpHeader, payload: &[u8]) -> usize {
+    payload.len()
+        + if tcp_hdr.syn { 1 } else { 0 }
+        + if tcp_hdr.fin { 1 } else { 0 }
+}
+
 pub struct SeqGen {
     // TODO: some random number generator?
 }
@@ -155,21 +169,36 @@ mod tests {
     const TEST_PORT: PortNum = 4434;
 
     #[test]
-    #[ignore]
-    fn no_listning_socket() {
-        unimplemented!()
+    fn closed_socket_syn() {
+        // No listening sockets
+        let mut tcp = Tcp::new();
+
+        let client_iss = 10;
+        let mut res_buf = [0u8; 1500];
+        let res_len =
+            send_syn(&mut tcp, &mut res_buf, client_iss).expect("no response");
+
+        let (_, res_tcp_hdr, payload_len) =
+            extract_headers(&res_buf[..res_len]);
+
+        // <SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>
+        assert_eq!(payload_len, 0, "should respond with no payload");
+        assert_eq!(res_tcp_hdr.rst, true, "should respond with a RST");
+        assert_eq!(res_tcp_hdr.ack, true, "should respond with an ACK");
+        assert_eq!(
+            res_tcp_hdr.sequence_number, 0,
+            "sequence number should be 0"
+        );
+        assert_eq!(
+            res_tcp_hdr.acknowledgment_number,
+            client_iss + 1,
+            "acknowledgement number should be SEG.SEQ+SEG.LEN"
+        );
     }
 
     #[test]
     fn original_syn() {
-        let mut tcp = Tcp::new();
-        tcp.listen(ListeningSocketId::V4 {
-            remote_addr: Ipv4Addr::UNSPECIFIED,
-            remote_port: None,
-            local_addr: Ipv4Addr::LOCALHOST,
-            local_port: TEST_PORT,
-        })
-        .unwrap();
+        let mut tcp = new_listening_tcp();
 
         let client_iss = 0;
 
@@ -181,13 +210,13 @@ mod tests {
             Some(Ipv4Header::SERIALIZED_SIZE + TCP_MINIMUM_HEADER_SIZE),
             "response length should be size of IP+TCP headers"
         );
-        let res_hdrs =
-            PacketHeaders::from_ip_slice(&res_buf[..res_len.unwrap()]).unwrap();
 
-        assert_eq!(res_hdrs.payload.len(), 0, "should respond with no payload");
+        let (_, res_tcp_hdr, payload_len) =
+            extract_headers(&res_buf[..res_len.unwrap()]);
+
+        assert_eq!(payload_len, 0, "should respond with no payload");
         // let res_ip_hdr = res_hdrs.ip.unwrap();
         // TODO: assert we're responding to/from the correct IP
-        let res_tcp_hdr = res_hdrs.transport.unwrap().tcp().unwrap();
         assert_eq!(res_tcp_hdr.syn, true, "should respond with a SYN");
         assert_eq!(res_tcp_hdr.ack, true, "should respond with an ACK");
         assert_eq!(
@@ -199,14 +228,7 @@ mod tests {
 
     #[test]
     fn three_way() {
-        let mut tcp = Tcp::new();
-        tcp.listen(ListeningSocketId::V4 {
-            remote_addr: Ipv4Addr::UNSPECIFIED,
-            remote_port: None,
-            local_addr: Ipv4Addr::LOCALHOST,
-            local_port: TEST_PORT,
-        })
-        .unwrap();
+        let mut tcp = new_listening_tcp();
 
         let client_iss = 0;
 
@@ -215,13 +237,8 @@ mod tests {
         let syn_res_len = send_syn(&mut tcp, &mut syn_res_buf, client_iss);
 
         // SYN/ACK <-
-        let syn_ack_hdr =
-            PacketHeaders::from_ip_slice(&syn_res_buf[..syn_res_len.unwrap()])
-                .unwrap()
-                .transport
-                .unwrap()
-                .tcp()
-                .unwrap();
+        let (_, syn_ack_hdr, _) =
+            extract_headers(&syn_res_buf[..syn_res_len.unwrap()]);
 
         // ACK ->
         let mut ack_res_buf = [0u8; 1500];
@@ -310,5 +327,32 @@ mod tests {
         );
 
         (ip_hdr, tcp_hdr)
+    }
+
+    fn new_listening_tcp() -> Tcp {
+        let mut tcp = Tcp::new();
+        tcp.listen(ListeningSocketId::V4 {
+            remote_addr: Ipv4Addr::UNSPECIFIED,
+            remote_port: None,
+            local_addr: Ipv4Addr::LOCALHOST,
+            local_port: TEST_PORT,
+        })
+        .unwrap();
+        tcp
+    }
+
+    fn extract_headers(buf: &[u8]) -> (IpHeader, TcpHeader, usize) {
+        let headers = PacketHeaders::from_ip_slice(&buf)
+            .expect("unable to parse headers");
+
+        let ip_hdr = headers.ip.expect("unable to parse IP header");
+
+        let tcp_hdr = headers
+            .transport
+            .expect("unable to parse TCP/UDP header")
+            .tcp()
+            .expect("unable to parse TCP header");
+
+        (ip_hdr, tcp_hdr, headers.payload.len())
     }
 }
