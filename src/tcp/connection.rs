@@ -156,12 +156,15 @@ impl Connection {
         hdr: &TcpHeader,
         mut res_buf: &mut [u8],
     ) -> Result<Option<usize>> {
+        // TODO: NEXT
         // TODO: first check sequence number
         // TODO: second check the RST bit
         // third check security and precedence (nah)
         // TODO: fourth, check the SYN bit
         // fifth check the ACK field
         if hdr.ack {
+            // Note that once in the ESTABLISHED state all segments must carry current acknowledgment information
+            // TODO: in some (all?) cases we don't want to return here, we want to keep processing
             self.receive_ack(&hdr, &mut res_buf)
         } else {
             // if the ACK bit is off drop the segment and return

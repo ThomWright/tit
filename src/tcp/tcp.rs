@@ -57,30 +57,44 @@ impl Tcp {
                 c.get_mut().receive(&tcp_hdr, &mut res_buf)
             }
             Entry::Vacant(conn_entry) => {
-                // check we have a matching LISTEN-ing socket
+                // Check we have a matching LISTEN-ing socket
                 if self
                     .listening_sockets
                     .get(&conn_id.local_socket())
                     .filter(|s| s.matches(&conn_id))
                     .is_some()
                 {
+                    // State: LISTEN
+
+                    // first check for an RST
                     if tcp_hdr.rst {
                         Ok(None)
+
+                    // second check for an ACK
                     } else if tcp_hdr.ack {
                         Connection::send_rst_packet(
                             &conn_id,
                             tcp_hdr.acknowledgment_number,
                             &mut res_buf,
                         )
-                    } else if !tcp_hdr.syn {
-                        Ok(None)
-                    } else {
+
+                    // third check for a SYN
+                    } else if tcp_hdr.syn {
                         let conn = conn_entry.insert(Connection::new(
                             conn_id,
                             &tcp_hdr,
                             &self.seq_gen,
                         ));
+                        // TODO: should probably put this in Connection::receive
+                        //  The connection state should be changed to SYN-RECEIVED.
+                        //  Note that any other incoming control or data (combined with SYN)
+                        //  will be processed in the SYN-RECEIVED state
                         conn.send_syn_ack(&mut res_buf)
+
+                    // fourth other text or control
+                    } else {
+                        // you are unlikely to get here, but if you do, drop the segment, and return
+                        Ok(None)
                     }
                 } else {
                     // if CLOSED (no matching socket in LISTEN state):
