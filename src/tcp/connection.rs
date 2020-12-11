@@ -154,10 +154,41 @@ impl Connection {
     pub fn receive(
         &mut self,
         hdr: &TcpHeader,
+        payload: &[u8],
         mut res_buf: &mut [u8],
     ) -> Result<Option<usize>> {
         // TODO: NEXT
         // TODO: first check sequence number
+        match self.state {
+            State::SynReceived
+            | State::Established
+            | State::FinWait1
+            | State::FinWait2
+            | State::CloseWait
+            | State::Closing
+            | State::LastAck
+            | State::TimeWait => {
+                let seq_num_ok = self.acceptable_seq_num(&hdr, &payload);
+
+                // TODO: If the RCV.WND is zero, no segments will be acceptable,
+                // but special allowance should be made to accept valid ACKs, URGs and RSTs.
+
+                // If an incoming segment is not acceptable, an acknowledgment
+                // should be sent in reply (unless the RST bit is set, if so
+                // drop the segment and return):
+                //     <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
+                if !seq_num_ok {
+                    if hdr.rst {
+                        return Ok(None);
+                    } else {
+                        return self.send_ack(&mut res_buf);
+                    }
+                }
+                // After sending the acknowledgment, drop the unacceptable
+                // segment and return.
+            }
+            _ => {}
+        }
         // TODO: second check the RST bit
         // third check security and precedence (nah)
         // TODO: fourth, check the SYN bit
@@ -372,6 +403,40 @@ impl Connection {
 
     fn acceptable_ack(&self, hdr: &TcpHeader) -> bool {
         acceptable_ack(self.snd_una, hdr.acknowledgment_number, self.snd_nxt)
+    }
+
+    /// Segment Receive  Test
+    /// Length  Window
+    /// ------- -------  -------------------------------------------
+    ///    0       0     SEG.SEQ = RCV.NXT
+    ///    0      >0     RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
+    ///   >0       0     not acceptable
+    ///   >0      >0     RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
+    ///               or RCV.NXT =< SEG.SEQ+SEG.LEN-1 < RCV.NXT+RCV.WND
+    fn acceptable_seq_num(&self, hdr: &TcpHeader, payload: &[u8]) -> bool {
+        let seg_seq = hdr.sequence_number;
+        let seg_len = super::tcp::segment_length(&hdr, &payload);
+
+        match (seg_len, self.rcv_wnd) {
+            (0, 0) => seg_seq == self.rcv_nxt,
+            (0, _) => is_between_wrapped(
+                self.rcv_nxt.wrapping_sub(1),
+                seg_seq,
+                self.rcv_nxt.wrapping_add(self.rcv_wnd.into()),
+            ),
+            (_, 0) => false,
+            (_, _) => {
+                is_between_wrapped(
+                    self.rcv_nxt.wrapping_sub(1),
+                    seg_seq,
+                    self.rcv_nxt.wrapping_add(self.rcv_wnd.into()),
+                ) || is_between_wrapped(
+                    self.rcv_nxt.wrapping_sub(1),
+                    seg_seq.wrapping_add(seg_len - 1),
+                    self.rcv_nxt.wrapping_add(self.rcv_wnd.into()),
+                )
+            }
+        }
     }
 }
 

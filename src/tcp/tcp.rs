@@ -54,7 +54,7 @@ impl Tcp {
 
         match self.connections.entry(conn_id) {
             Entry::Occupied(mut c) => {
-                c.get_mut().receive(&tcp_hdr, &mut res_buf)
+                c.get_mut().receive(&tcp_hdr, &payload, &mut res_buf)
             }
             Entry::Vacant(conn_entry) => {
                 // Check we have a matching LISTEN-ing socket
@@ -85,10 +85,6 @@ impl Tcp {
                             &tcp_hdr,
                             &self.seq_gen,
                         ));
-                        // TODO: should probably put this in Connection::receive
-                        //  The connection state should be changed to SYN-RECEIVED.
-                        //  Note that any other incoming control or data (combined with SYN)
-                        //  will be processed in the SYN-RECEIVED state
                         conn.send_syn_ack(&mut res_buf)
 
                     // fourth other text or control
@@ -119,8 +115,7 @@ impl Tcp {
                                 &conn_id,
                                 0,
                                 tcp_hdr.sequence_number
-                                    + segment_length(&tcp_hdr, &payload)
-                                        as RemoteSeqNum,
+                                    + segment_length(&tcp_hdr, &payload),
                                 &mut res_buf,
                             )
                         }
@@ -156,8 +151,8 @@ impl Tcp {
     }
 }
 
-fn segment_length(tcp_hdr: &TcpHeader, payload: &[u8]) -> usize {
-    payload.len()
+pub fn segment_length(tcp_hdr: &TcpHeader, payload: &[u8]) -> u32 {
+    payload.len() as u32
         + if tcp_hdr.syn { 1 } else { 0 }
         + if tcp_hdr.fin { 1 } else { 0 }
 }
@@ -257,7 +252,7 @@ mod tests {
         // ACK ->
         let mut ack_res_buf = [0u8; 1500];
         let ack_res_len =
-            send_ack(&mut tcp, &syn_ack_hdr, &mut ack_res_buf, client_iss);
+            send_ack(&mut tcp, &syn_ack_hdr, &mut ack_res_buf, client_iss.wrapping_add(1));
 
         assert_eq!(ack_res_len, None, "should be no response to the ACK");
 
