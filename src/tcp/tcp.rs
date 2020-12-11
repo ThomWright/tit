@@ -277,6 +277,12 @@ mod tests {
         // TODO: should receive no response
     }
 
+    #[test]
+    #[ignore]
+    fn unaccpeptable_seq_num() {
+        // TODO: should receive an ACK in response
+    }
+
     fn send_syn(
         tcp: &mut Tcp,
         mut res_buf: &mut [u8],

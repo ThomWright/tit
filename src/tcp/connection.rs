@@ -157,7 +157,6 @@ impl Connection {
         payload: &[u8],
         mut res_buf: &mut [u8],
     ) -> Result<Option<usize>> {
-        // TODO: NEXT
         // TODO: first check sequence number
         match self.state {
             State::SynReceived
@@ -168,8 +167,6 @@ impl Connection {
             | State::Closing
             | State::LastAck
             | State::TimeWait => {
-                let seq_num_ok = self.acceptable_seq_num(&hdr, &payload);
-
                 // TODO: If the RCV.WND is zero, no segments will be acceptable,
                 // but special allowance should be made to accept valid ACKs, URGs and RSTs.
 
@@ -177,18 +174,19 @@ impl Connection {
                 // should be sent in reply (unless the RST bit is set, if so
                 // drop the segment and return):
                 //     <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
-                if !seq_num_ok {
+                if !self.acceptable_seq_num(&hdr, &payload) {
                     if hdr.rst {
                         return Ok(None);
                     } else {
                         return self.send_ack(&mut res_buf);
+                        // After sending the acknowledgment, drop the unacceptable
+                        // segment and return.
                     }
                 }
-                // After sending the acknowledgment, drop the unacceptable
-                // segment and return.
             }
             _ => {}
         }
+        // TODO: NEXT
         // TODO: second check the RST bit
         // third check security and precedence (nah)
         // TODO: fourth, check the SYN bit
