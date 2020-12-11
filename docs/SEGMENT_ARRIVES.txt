@@ -1,488 +1,612 @@
 # SEGMENT ARRIVES
 
-Copied from: https://tools.ietf.org/html/rfc793
+Copied from: https://datatracker.ietf.org/doc/draft-ietf-tcpm-rfc793bis/
 
 If the state is CLOSED (i.e., TCB does not exist) then
 
-  all data in the incoming segment is discarded.  An incoming
-  segment containing a RST is discarded.  An incoming segment not
-  containing a RST causes a RST to be sent in response.  The
-  acknowledgment and sequence field values are selected to make the
-  reset sequence acceptable to the TCP that sent the offending
-  segment.
+    all data in the incoming segment is discarded.  An incoming
+    segment containing a RST is discarded.  An incoming segment not
+    containing a RST causes a RST to be sent in response.  The
+    acknowledgment and sequence field values are selected to make
+    the reset sequence acceptable to the TCP endpoint that sent the
+    offending segment.
 
-  If the ACK bit is off, sequence number zero is used,
+    If the ACK bit is off, sequence number zero is used,
 
-    <SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>
+      <SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>
 
-  If the ACK bit is on,
-
-    <SEQ=SEG.ACK><CTL=RST>
-
-  Return.
-
-If the state is LISTEN then
-
-  first check for an RST
-
-    An incoming RST should be ignored.  Return.
-
-  second check for an ACK
-
-    Any acknowledgment is bad if it arrives on a connection still in
-    the LISTEN state.  An acceptable reset segment should be formed
-    for any arriving ACK-bearing segment.  The RST should be
-    formatted as follows:
+    If the ACK bit is on,
 
       <SEQ=SEG.ACK><CTL=RST>
 
     Return.
 
-  third check for a SYN
+If the state is LISTEN then
 
-    If the SYN bit is set, check the security.  If the
-    security/compartment on the incoming segment does not exactly
-    match the security/compartment in the TCB then send a reset and
-    return.
+    first check for an RST
 
-      <SEQ=SEG.ACK><CTL=RST>
+      An incoming RST should be ignored.  Return.
 
-    If the SEG.PRC is greater than the TCB.PRC then if allowed by
-    the user and the system set TCB.PRC<-SEG.PRC, if not allowed
-    send a reset and return.
+    second check for an ACK
 
-      <SEQ=SEG.ACK><CTL=RST>
+      Any acknowledgment is bad if it arrives on a connection
+      still in the LISTEN state.  An acceptable reset segment
+      should be formed for any arriving ACK-bearing segment.  The
+      RST should be formatted as follows:
 
-    If the SEG.PRC is less than the TCB.PRC then continue.
+          <SEQ=SEG.ACK><CTL=RST>
 
-    Set RCV.NXT to SEG.SEQ+1, IRS is set to SEG.SEQ and any other
-    control or text should be queued for processing later.  ISS
-    should be selected and a SYN segment sent of the form:
+      Return.
 
-      <SEQ=ISS><ACK=RCV.NXT><CTL=SYN,ACK>
+    third check for a SYN
 
-    SND.NXT is set to ISS+1 and SND.UNA to ISS.  The connection
-    state should be changed to SYN-RECEIVED.  Note that any other
-    incoming control or data (combined with SYN) will be processed
-    in the SYN-RECEIVED state, but processing of SYN and ACK should
-    not be repeated.  If the listen was not fully specified (i.e.,
-    the foreign socket was not fully specified), then the
-    unspecified fields should be filled in now.
+      If the SYN bit is set, check the security.  If the security/
+      compartment on the incoming segment does not exactly match
+      the security/compartment in the TCB then send a reset and
+      return.
 
-  fourth other text or control
+          <SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>
 
-    Any other control or text-bearing segment (not containing SYN)
-    must have an ACK and thus would be discarded by the ACK
-    processing.  An incoming RST segment could not be valid, since
-    it could not have been sent in response to anything sent by this
-    incarnation of the connection.  So you are unlikely to get here,
-    but if you do, drop the segment, and return.
+      Set RCV.NXT to SEG.SEQ+1, IRS is set to SEG.SEQ and any
+      other control or text should be queued for processing later.
+      ISS should be selected and a SYN segment sent of the form:
+
+          <SEQ=ISS><ACK=RCV.NXT><CTL=SYN,ACK>
+
+      SND.NXT is set to ISS+1 and SND.UNA to ISS.  The connection
+      state should be changed to SYN-RECEIVED.  Note that any
+      other incoming control or data (combined with SYN) will be
+      processed in the SYN-RECEIVED state, but processing of SYN
+      and ACK should not be repeated.  If the listen was not fully
+      specified (i.e., the remote socket was not fully specified),
+      then the unspecified fields should be filled in now.
+
+    fourth other text or control
+
+      Any other control or text-bearing segment (not containing
+      SYN) must have an ACK and thus would be discarded by the ACK
+      processing.  An incoming RST segment could not be valid,
+      since it could not have been sent in response to anything
+      sent by this incarnation of the connection.  So, if this
+      unlikely condition is reached, the correct behavior is to
+      drop the segment and return.
 
 If the state is SYN-SENT then
 
-  first check the ACK bit
+    first check the ACK bit
 
-    If the ACK bit is set
+      If the ACK bit is set
 
-      If SEG.ACK =< ISS, or SEG.ACK > SND.NXT, send a reset (unless
-      the RST bit is set, if so drop the segment and return)
+          If SEG.ACK =< ISS, or SEG.ACK > SND.NXT, send a reset
+          (unless the RST bit is set, if so drop the segment and
+          return)
 
-        <SEQ=SEG.ACK><CTL=RST>
+            <SEQ=SEG.ACK><CTL=RST>
 
-      and discard the segment.  Return.
+          and discard the segment.  Return.
 
-      If SND.UNA =< SEG.ACK =< SND.NXT then the ACK is acceptable.
+          If SND.UNA < SEG.ACK =< SND.NXT then the ACK is
+          acceptable.  Some deployed TCP code has used the check
+          SEG.ACK == SND.NXT (using "==" rather than "=<", but this
+          is not appropriate when the stack is capable of sending
+          data on the SYN, because the TCP peer may not accept and
+          acknowledge all of the data on the SYN.
 
-  second check the RST bit
+    second check the RST bit
 
-    If the RST bit is set
+      If the RST bit is set
 
-      If the ACK was acceptable then signal the user "error:
-      connection reset", drop the segment, enter CLOSED state,
-      delete TCB, and return.  Otherwise (no ACK) drop the segment
-      and return.
+          A potential blind reset attack is described in RFC 5961
+          [34].  The mitigation described in that document has
+          specific applicability explained therein, and is not a
+          substitute for cryptographic protection (e.g.  IPsec or
+          TCP-AO).  A TCP implementation that supports the RFC 5961
+          mitigation SHOULD first check that the sequence number
+          exactly matches RCV.NXT prior to executing the action in
+          the next paragraph.
 
-  third check the security and precedence
+          If the ACK was acceptable then signal the user "error:
+          connection reset", drop the segment, enter CLOSED state,
+          delete TCB, and return.  Otherwise (no ACK) drop the
+          segment and return.
 
-    If the security/compartment in the segment does not exactly
-    match the security/compartment in the TCB, send a reset
+    third check the security
 
-      If there is an ACK
+      If the security/compartment in the segment does not exactly
+      match the security/compartment in the TCB, send a reset
 
-        <SEQ=SEG.ACK><CTL=RST>
+          If there is an ACK
 
-      Otherwise
+            <SEQ=SEG.ACK><CTL=RST>
 
-        <SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>
+          Otherwise
 
-    If there is an ACK
+            <SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>
 
-      The precedence in the segment must match the precedence in the
-      TCB, if not, send a reset
+      If a reset was sent, discard the segment and return.
 
-        <SEQ=SEG.ACK><CTL=RST>
+    fourth check the SYN bit
 
-    If there is no ACK
+      This step should be reached only if the ACK is ok, or there
+      is no ACK, and it the segment did not contain a RST.
 
-      If the precedence in the segment is higher than the precedence
-      in the TCB then if allowed by the user and the system raise
-      the precedence in the TCB to that in the segment, if not
-      allowed to raise the prec then send a reset.
+      If the SYN bit is on and the security/compartment is
+      acceptable then, RCV.NXT is set to SEG.SEQ+1, IRS is set to
+      SEG.SEQ.  SND.UNA should be advanced to equal SEG.ACK (if
+      there is an ACK), and any segments on the retransmission
+      queue that are thereby acknowledged should be removed.
 
-        <SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>
+      If SND.UNA > ISS (our SYN has been ACKed), change the
+      connection state to ESTABLISHED, form an ACK segment
 
-      If the precedence in the segment is lower than the precedence
-      in the TCB continue.
+          <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
 
-    If a reset was sent, discard the segment and return.
+      and send it.  Data or controls that were queued for
+      transmission may be included.  If there are other controls
 
-  fourth check the SYN bit
+      or text in the segment then continue processing at the sixth
+      step below where the URG bit is checked, otherwise return.
 
-    This step should be reached only if the ACK is ok, or there is
-    no ACK, and it the segment did not contain a RST.
+      Otherwise enter SYN-RECEIVED, form a SYN,ACK segment
 
-    If the SYN bit is on and the security/compartment and precedence
+          <SEQ=ISS><ACK=RCV.NXT><CTL=SYN,ACK>
 
+      and send it.  Set the variables:
 
-    are acceptable then, RCV.NXT is set to SEG.SEQ+1, IRS is set to
-    SEG.SEQ.  SND.UNA should be advanced to equal SEG.ACK (if there
-    is an ACK), and any segments on the retransmission queue which
-    are thereby acknowledged should be removed.
+          SND.WND <- SEG.WND
+          SND.WL1 <- SEG.SEQ
+          SND.WL2 <- SEG.ACK
 
-    If SND.UNA > ISS (our SYN has been ACKed), change the connection
-    state to ESTABLISHED, form an ACK segment
+      If there are other controls or text in the segment, queue
+      them for processing after the ESTABLISHED state has been
+      reached, return.
 
-      <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
+      Note that it is legal to send and receive application data
+      on SYN segments (this is the "text in the segment" mentioned
+      above.  There has been significant misinformation and
+      misunderstanding of this topic historically.  Some firewalls
+      and security devices consider this suspicious.  However, the
+      capability was used in T/TCP [17] and is used in TCP Fast
+      Open (TFO) [44], so is important for implementations and
+      network devices to permit.
 
-    and send it.  Data or controls which were queued for
-    transmission may be included.  If there are other controls or
-    text in the segment then continue processing at the sixth step
-    below where the URG bit is checked, otherwise return.
-
-    Otherwise enter SYN-RECEIVED, form a SYN,ACK segment
-
-      <SEQ=ISS><ACK=RCV.NXT><CTL=SYN,ACK>
-
-    and send it.  If there are other controls or text in the
-    segment, queue them for processing after the ESTABLISHED state
-    has been reached, return.
-
-  fifth, if neither of the SYN or RST bits is set then drop the
-  segment and return.
+    fifth, if neither of the SYN or RST bits is set then drop the
+    segment and return.
 
 Otherwise,
 
 first check sequence number
 
-  SYN-RECEIVED STATE
-  ESTABLISHED STATE
-  FIN-WAIT-1 STATE
-  FIN-WAIT-2 STATE
-  CLOSE-WAIT STATE
-  CLOSING STATE
-  LAST-ACK STATE
-  TIME-WAIT STATE
+    SYN-RECEIVED STATE
+    ESTABLISHED STATE
+    FIN-WAIT-1 STATE
+    FIN-WAIT-2 STATE
+    CLOSE-WAIT STATE
+    CLOSING STATE
+    LAST-ACK STATE
+    TIME-WAIT STATE
 
-    Segments are processed in sequence.  Initial tests on arrival
-    are used to discard old duplicates, but further processing is
-    done in SEG.SEQ order.  If a segment's contents straddle the
-    boundary between old and new, only the new parts should be
-    processed.
+      Segments are processed in sequence.  Initial tests on
+      arrival are used to discard old duplicates, but further
+      processing is done in SEG.SEQ order.  If a segment's
+      contents straddle the boundary between old and new, only the
+      new parts should be processed.
 
-    There are four cases for the acceptability test for an incoming
-    segment:
+      In general, the processing of received segments MUST be
+      implemented to aggregate ACK segments whenever possible
+      (MUST-58).  For example, if the TCP endpoint is processing a
+      series of queued segments, it MUST process them all before
+      sending any ACK segments (MUST-59).
+
+      There are four cases for the acceptability test for an
+      incoming segment:
 
     Segment Receive  Test
     Length  Window
     ------- -------  -------------------------------------------
 
-        0       0     SEG.SEQ = RCV.NXT
+      0       0     SEG.SEQ = RCV.NXT
 
-        0      >0     RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
+      0      >0     RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
 
       >0       0     not acceptable
 
       >0      >0     RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
                   or RCV.NXT =< SEG.SEQ+SEG.LEN-1 < RCV.NXT+RCV.WND
 
-    If the RCV.WND is zero, no segments will be acceptable, but
-    special allowance should be made to accept valid ACKs, URGs and
-    RSTs.
+      In implementing sequence number validation as described
+      here, please note Appendix A.2.
 
-    If an incoming segment is not acceptable, an acknowledgment
-    should be sent in reply (unless the RST bit is set, if so drop
-    the segment and return):
+      If the RCV.WND is zero, no segments will be acceptable, but
+      special allowance should be made to accept valid ACKs, URGs
+      and RSTs.
 
-      <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
+      If an incoming segment is not acceptable, an acknowledgment
+      should be sent in reply (unless the RST bit is set, if so
+      drop the segment and return):
 
-    After sending the acknowledgment, drop the unacceptable segment
+          <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
+
+      After sending the acknowledgment, drop the unacceptable
+      segment and return.
+
+      Note that for the TIME-WAIT state, there is an improved
+      algorithm described in [36] for handling incoming SYN
+      segments, that utilizes timestamps rather than relying on
+      the sequence number check described here.  When the improved
+      algorithm is implemented, the logic above is not applicable
+      for incoming SYN segments with timestamp options, received
+      on a connection in the TIME-WAIT state.
+
+      In the following it is assumed that the segment is the
+      idealized segment that begins at RCV.NXT and does not exceed
+      the window.  One could tailor actual segments to fit this
+      assumption by trimming off any portions that lie outside the
+      window (including SYN and FIN), and only processing further
+      if the segment then begins at RCV.NXT.  Segments with higher
+      beginning sequence numbers SHOULD be held for later
+      processing (SHLD-31).
+
+    second check the RST bit,
+
+      RFC 5961 [34] section 3 describes a potential blind reset
+      attack and optional mitigation approach.  This does not
+      provide a cryptographic protection (e.g. as in IPsec or TCP-
+      AO), but can be applicable in situations described in RFC
+      5961.  For stacks implementing the RFC 5961 protection, the
+      three checks below apply, otherwise processing for these
+      states is indicated further below.
+
+          1) If the RST bit is set and the sequence number is
+          outside the current receive window, silently drop the
+          segment.
+
+          2) If the RST bit is set and the sequence number exactly
+          matches the next expected sequence number (RCV.NXT), then
+          TCP endpoints MUST reset the connection in the manner
+          prescribed below according to the connection state.
+
+          3) If the RST bit is set and the sequence number does not
+          exactly match the next expected sequence value, yet is
+          within the current receive window, TCP endpoints MUST
+          send an acknowledgement (challenge ACK):
+
+          <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
+
+          After sending the challenge ACK, TCP endpoints MUST drop
+          the unacceptable segment and stop processing the incoming
+          packet further.  Note that RFC 5961 and Errata ID 4772
+          contain additional considerations for ACK throttling in
+          an implementation.
+
+      SYN-RECEIVED STATE
+
+          If the RST bit is set
+
+            If this connection was initiated with a passive OPEN
+            (i.e., came from the LISTEN state), then return this
+            connection to LISTEN state and return.  The user need
+
+            not be informed.  If this connection was initiated
+            with an active OPEN (i.e., came from SYN-SENT state)
+            then the connection was refused, signal the user
+            "connection refused".  In either case, all segments on
+            the retransmission queue should be removed.  And in
+            the active OPEN case, enter the CLOSED state and
+            delete the TCB, and return.
+
+      ESTABLISHED
+      FIN-WAIT-1
+      FIN-WAIT-2
+      CLOSE-WAIT
+
+          If the RST bit is set then, any outstanding RECEIVEs and
+          SEND should receive "reset" responses.  All segment
+          queues should be flushed.  Users should also receive an
+          unsolicited general "connection reset" signal.  Enter the
+          CLOSED state, delete the TCB, and return.
+
+      CLOSING STATE
+      LAST-ACK STATE
+      TIME-WAIT
+
+          If the RST bit is set then, enter the CLOSED state,
+          delete the TCB, and return.
+
+    third check security
+
+      SYN-RECEIVED
+
+          If the security/compartment in the segment does not
+          exactly match the security/compartment in the TCB then
+          send a reset, and return.
+
+      ESTABLISHED
+      FIN-WAIT-1
+      FIN-WAIT-2
+      CLOSE-WAIT
+      CLOSING
+      LAST-ACK
+      TIME-WAIT
+
+          If the security/compartment in the segment does not
+          exactly match the security/compartment in the TCB then
+          send a reset, any outstanding RECEIVEs and SEND should
+          receive "reset" responses.  All segment queues should be
+          flushed.  Users should also receive an unsolicited
+
+          general "connection reset" signal.  Enter the CLOSED
+          state, delete the TCB, and return.
+
+      Note this check is placed following the sequence check to
+      prevent a segment from an old connection between these port
+      numbers with a different security from causing an abort of
+      the current connection.
+
+    fourth, check the SYN bit,
+
+      SYN-RECEIVED
+
+          If the connection was initiated with a passive OPEN, then
+          return this connection to the LISTEN state and return.
+          Otherwise, handle per the directions for synchronized
+          states below.
+
+      ESTABLISHED STATE
+      FIN-WAIT STATE-1
+      FIN-WAIT STATE-2
+      CLOSE-WAIT STATE
+      CLOSING STATE
+      LAST-ACK STATE
+      TIME-WAIT STATE
+
+          If the SYN bit is set in these synchronized states, it
+          may be either a legitimate new connection attempt (e.g.
+          in the case of TIME-WAIT), an error where the connection
+          should be reset, or the result of an attack attempt, as
+          described in RFC 5961 [34].  For the TIME-WAIT state, new
+          connections can be accepted if the timestamp option is
+          used and meets expectations (per [36]).  For all other
+          cases, RFC 5961 provides a mitigation with applicability
+          to some situations, though there are also alternatives
+          that offer cryptographic protection (see Section 6).  RFC
+          5961 recommends that in these synchronized states, if the
+          SYN bit is set, irrespective of the sequence number, TCP
+          endpoints MUST send a "challenge ACK" to the remote peer:
+
+          <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
+
+          After sending the acknowledgement, TCP implementations
+          MUST drop the unacceptable segment and stop processing
+          further.  Note that RFC 5961 and Errata ID 4772 contain
+          additional ACK throttling notes for an implementation.
+
+          For implementations that do not follow RFC 5961, the
+          original RFC 793 behavior follows in this paragraph.  If
+          the SYN is in the window it is an error, send a reset,
+          any outstanding RECEIVEs and SEND should receive "reset"
+          responses, all segment queues should be flushed, the user
+          should also receive an unsolicited general "connection
+          reset" signal, enter the CLOSED state, delete the TCB,
+          and return.
+
+          If the SYN is not in the window this step would not be
+          reached and an ACK would have been sent in the first step
+          (sequence number check).
+
+    fifth check the ACK field,
+
+      if the ACK bit is off drop the segment and return
+
+      if the ACK bit is on
+
+          RFC 5961 [34] section 5 describes a potential blind data
+          injection attack, and mitigation that implementations MAY
+          choose to include (MAY-12).  TCP stacks that implement
+          RFC 5961 MUST add an input check that the ACK value is
+          acceptable only if it is in the range of ((SND.UNA -
+          MAX.SND.WND) =< SEG.ACK =< SND.NXT).  All incoming
+          segments whose ACK value doesn't satisfy the above
+          condition MUST be discarded and an ACK sent back.  The
+          new state variable MAX.SND.WND is defined as the largest
+          window that the local sender has ever received from its
+          peer (subject to window scaling) or may be hard-coded to
+          a maximum permissible window value.  When the ACK value
+          is acceptable, the processing per-state below applies:
+
+          SYN-RECEIVED STATE
+
+            If SND.UNA < SEG.ACK =< SND.NXT then enter ESTABLISHED
+            state and continue processing with variables below set
+            to:
+
+                SND.WND <- SEG.WND
+                SND.WL1 <- SEG.SEQ
+                SND.WL2 <- SEG.ACK
+
+                If the segment acknowledgment is not acceptable,
+                form a reset segment,
+
+                  <SEQ=SEG.ACK><CTL=RST>
+
+                and send it.
+
+          ESTABLISHED STATE
+
+            If SND.UNA < SEG.ACK =< SND.NXT then, set SND.UNA <-
+            SEG.ACK.  Any segments on the retransmission queue
+            that are thereby entirely acknowledged are removed.
+            Users should receive positive acknowledgments for
+            buffers that have been SENT and fully acknowledged
+            (i.e., SEND buffer should be returned with "ok"
+            response).  If the ACK is a duplicate (SEG.ACK =<
+            SND.UNA), it can be ignored.  If the ACK acks
+            something not yet sent (SEG.ACK > SND.NXT) then send
+            an ACK, drop the segment, and return.
+
+            If SND.UNA =< SEG.ACK =< SND.NXT, the send window
+            should be updated.  If (SND.WL1 < SEG.SEQ or (SND.WL1
+            = SEG.SEQ and SND.WL2 =< SEG.ACK)), set SND.WND <-
+            SEG.WND, set SND.WL1 <- SEG.SEQ, and set SND.WL2 <-
+            SEG.ACK.
+
+            Note that SND.WND is an offset from SND.UNA, that
+            SND.WL1 records the sequence number of the last
+            segment used to update SND.WND, and that SND.WL2
+            records the acknowledgment number of the last segment
+            used to update SND.WND.  The check here prevents using
+            old segments to update the window.
+
+          FIN-WAIT-1 STATE
+
+            In addition to the processing for the ESTABLISHED
+            state, if the FIN segment is now acknowledged then
+            enter FIN-WAIT-2 and continue processing in that
+            state.
+
+          FIN-WAIT-2 STATE
+
+            In addition to the processing for the ESTABLISHED
+            state, if the retransmission queue is empty, the
+            user's CLOSE can be acknowledged ("ok") but do not
+            delete the TCB.
+
+          CLOSE-WAIT STATE
+
+            Do the same processing as for the ESTABLISHED state.
+
+          CLOSING STATE
+
+            In addition to the processing for the ESTABLISHED
+            state, if the ACK acknowledges our FIN then enter the
+            TIME-WAIT state, otherwise ignore the segment.
+
+          LAST-ACK STATE
+
+            The only thing that can arrive in this state is an
+            acknowledgment of our FIN.  If our FIN is now
+            acknowledged, delete the TCB, enter the CLOSED state,
+            and return.
+
+          TIME-WAIT STATE
+
+            The only thing that can arrive in this state is a
+            retransmission of the remote FIN.  Acknowledge it, and
+            restart the 2 MSL timeout.
+
+    sixth, check the URG bit,
+
+      ESTABLISHED STATE
+      FIN-WAIT-1 STATE
+      FIN-WAIT-2 STATE
+
+          If the URG bit is set, RCV.UP <- max(RCV.UP,SEG.UP), and
+          signal the user that the remote side has urgent data if
+          the urgent pointer (RCV.UP) is in advance of the data
+          consumed.  If the user has already been signaled (or is
+          still in the "urgent mode") for this continuous sequence
+          of urgent data, do not signal the user again.
+
+      CLOSE-WAIT STATE
+      CLOSING STATE
+      LAST-ACK STATE
+      TIME-WAIT
+
+          This should not occur, since a FIN has been received from
+          the remote side.  Ignore the URG.
+
+    seventh, process the segment text,
+
+      ESTABLISHED STATE
+      FIN-WAIT-1 STATE
+      FIN-WAIT-2 STATE
+
+          Once in the ESTABLISHED state, it is possible to deliver
+          segment text to user RECEIVE buffers.  Text from segments
+          can be moved into buffers until either the buffer is full
+          or the segment is empty.  If the segment empties and
+
+          carries a PUSH flag, then the user is informed, when the
+          buffer is returned, that a PUSH has been received.
+
+          When the TCP endpoint takes responsibility for delivering
+          the data to the user it must also acknowledge the receipt
+          of the data.
+
+          Once the TCP endpoint takes responsibility for the data
+          it advances RCV.NXT over the data accepted, and adjusts
+          RCV.WND as appropriate to the current buffer
+          availability.  The total of RCV.NXT and RCV.WND should
+          not be reduced.
+
+          A TCP implementation MAY send an ACK segment
+          acknowledging RCV.NXT when a valid segment arrives that
+          is in the window but not at the left window edge (MAY-
+          13).
+
+          Please note the window management suggestions in
+          Section 3.7.
+
+          Send an acknowledgment of the form:
+
+            <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
+
+          This acknowledgment should be piggybacked on a segment
+          being transmitted if possible without incurring undue
+          delay.
+
+      CLOSE-WAIT STATE
+      CLOSING STATE
+      LAST-ACK STATE
+      TIME-WAIT STATE
+
+          This should not occur, since a FIN has been received from
+          the remote side.  Ignore the segment text.
+
+    eighth, check the FIN bit,
+
+      Do not process the FIN if the state is CLOSED, LISTEN or
+      SYN-SENT since the SEG.SEQ cannot be validated; drop the
+      segment and return.
+
+      If the FIN bit is set, signal the user "connection closing"
+      and return any pending RECEIVEs with same message, advance
+      RCV.NXT over the FIN, and send an acknowledgment for the
+      FIN.  Note that FIN implies PUSH for any segment text not
+      yet delivered to the user.
+
+          SYN-RECEIVED STATE
+          ESTABLISHED STATE
+
+            Enter the CLOSE-WAIT state.
+
+          FIN-WAIT-1 STATE
+
+            If our FIN has been ACKed (perhaps in this segment),
+            then enter TIME-WAIT, start the time-wait timer, turn
+            off the other timers; otherwise enter the CLOSING
+            state.
+
+          FIN-WAIT-2 STATE
+
+            Enter the TIME-WAIT state.  Start the time-wait timer,
+            turn off the other timers.
+
+          CLOSE-WAIT STATE
+
+            Remain in the CLOSE-WAIT state.
+
+          CLOSING STATE
+
+            Remain in the CLOSING state.
+
+          LAST-ACK STATE
+
+            Remain in the LAST-ACK state.
+
+          TIME-WAIT STATE
+
+            Remain in the TIME-WAIT state.  Restart the 2 MSL
+            time-wait timeout.
+
     and return.
-
-
-    In the following it is assumed that the segment is the idealized
-    segment that begins at RCV.NXT and does not exceed the window.
-    One could tailor actual segments to fit this assumption by
-    trimming off any portions that lie outside the window (including
-    SYN and FIN), and only processing further if the segment then
-    begins at RCV.NXT.  Segments with higher begining sequence
-    numbers may be held for later processing.
-
-second check the RST bit,
-
-  SYN-RECEIVED STATE
-
-    If the RST bit is set
-
-      If this connection was initiated with a passive OPEN (i.e.,
-      came from the LISTEN state), then return this connection to
-      LISTEN state and return.  The user need not be informed.  If
-      this connection was initiated with an active OPEN (i.e., came
-      from SYN-SENT state) then the connection was refused, signal
-      the user "connection refused".  In either case, all segments
-      on the retransmission queue should be removed.  And in the
-      active OPEN case, enter the CLOSED state and delete the TCB,
-      and return.
-
-  ESTABLISHED
-  FIN-WAIT-1
-  FIN-WAIT-2
-  CLOSE-WAIT
-
-    If the RST bit is set then, any outstanding RECEIVEs and SEND
-    should receive "reset" responses.  All segment queues should be
-    flushed.  Users should also receive an unsolicited general
-    "connection reset" signal.  Enter the CLOSED state, delete the
-    TCB, and return.
-
-  CLOSING STATE
-  LAST-ACK STATE
-  TIME-WAIT
-
-    If the RST bit is set then, enter the CLOSED state, delete the
-    TCB, and return.
-
-third check security and precedence
-
-  SYN-RECEIVED
-
-    If the security/compartment and precedence in the segment do not
-    exactly match the security/compartment and precedence in the TCB
-    then send a reset, and return.
-
-  ESTABLISHED STATE
-
-    If the security/compartment and precedence in the segment do not
-    exactly match the security/compartment and precedence in the TCB
-    then send a reset, any outstanding RECEIVEs and SEND should
-    receive "reset" responses.  All segment queues should be
-    flushed.  Users should also receive an unsolicited general
-    "connection reset" signal.  Enter the CLOSED state, delete the
-    TCB, and return.
-
-  Note this check is placed following the sequence check to prevent
-  a segment from an old connection between these ports with a
-  different security or precedence from causing an abort of the
-  current connection.
-
-fourth, check the SYN bit,
-
-  SYN-RECEIVED
-  ESTABLISHED STATE
-  FIN-WAIT STATE-1
-  FIN-WAIT STATE-2
-  CLOSE-WAIT STATE
-  CLOSING STATE
-  LAST-ACK STATE
-  TIME-WAIT STATE
-
-    If the SYN is in the window it is an error, send a reset, any
-    outstanding RECEIVEs and SEND should receive "reset" responses,
-    all segment queues should be flushed, the user should also
-    receive an unsolicited general "connection reset" signal, enter
-    the CLOSED state, delete the TCB, and return.
-
-    If the SYN is not in the window this step would not be reached
-    and an ack would have been sent in the first step (sequence
-    number check).
-
-fifth check the ACK field,
-
-  if the ACK bit is off drop the segment and return
-
-  if the ACK bit is on
-
-    SYN-RECEIVED STATE
-
-      If SND.UNA =< SEG.ACK =< SND.NXT then enter ESTABLISHED state
-      and continue processing.
-
-        If the segment acknowledgment is not acceptable, form a
-        reset segment,
-
-          <SEQ=SEG.ACK><CTL=RST>
-
-        and send it.
-
-    ESTABLISHED STATE
-
-      If SND.UNA < SEG.ACK =< SND.NXT then, set SND.UNA <- SEG.ACK.
-      Any segments on the retransmission queue which are thereby
-      entirely acknowledged are removed.  Users should receive
-      positive acknowledgments for buffers which have been SENT and
-      fully acknowledged (i.e., SEND buffer should be returned with
-      "ok" response).  If the ACK is a duplicate
-      (SEG.ACK < SND.UNA), it can be ignored.  If the ACK acks
-      something not yet sent (SEG.ACK > SND.NXT) then send an ACK,
-      drop the segment, and return.
-
-      If SND.UNA < SEG.ACK =< SND.NXT, the send window should be
-      updated.  If (SND.WL1 < SEG.SEQ or (SND.WL1 = SEG.SEQ and
-      SND.WL2 =< SEG.ACK)), set SND.WND <- SEG.WND, set
-      SND.WL1 <- SEG.SEQ, and set SND.WL2 <- SEG.ACK.
-
-      Note that SND.WND is an offset from SND.UNA, that SND.WL1
-      records the sequence number of the last segment used to update
-      SND.WND, and that SND.WL2 records the acknowledgment number of
-      the last segment used to update SND.WND.  The check here
-      prevents using old segments to update the window.
-
-    FIN-WAIT-1 STATE
-
-      In addition to the processing for the ESTABLISHED state, if
-      our FIN is now acknowledged then enter FIN-WAIT-2 and continue
-      processing in that state.
-
-    FIN-WAIT-2 STATE
-
-      In addition to the processing for the ESTABLISHED state, if
-      the retransmission queue is empty, the user's CLOSE can be
-      acknowledged ("ok") but do not delete the TCB.
-
-    CLOSE-WAIT STATE
-
-      Do the same processing as for the ESTABLISHED state.
-
-    CLOSING STATE
-
-      In addition to the processing for the ESTABLISHED state, if
-      the ACK acknowledges our FIN then enter the TIME-WAIT state,
-      otherwise ignore the segment.
-
-    LAST-ACK STATE
-
-      The only thing that can arrive in this state is an
-      acknowledgment of our FIN.  If our FIN is now acknowledged,
-      delete the TCB, enter the CLOSED state, and return.
-
-    TIME-WAIT STATE
-
-      The only thing that can arrive in this state is a
-      retransmission of the remote FIN.  Acknowledge it, and restart
-      the 2 MSL timeout.
-
-sixth, check the URG bit,
-
-  ESTABLISHED STATE
-  FIN-WAIT-1 STATE
-  FIN-WAIT-2 STATE
-
-    If the URG bit is set, RCV.UP <- max(RCV.UP,SEG.UP), and signal
-    the user that the remote side has urgent data if the urgent
-    pointer (RCV.UP) is in advance of the data consumed.  If the
-    user has already been signaled (or is still in the "urgent
-    mode") for this continuous sequence of urgent data, do not
-    signal the user again.
-
-
-  CLOSE-WAIT STATE
-  CLOSING STATE
-  LAST-ACK STATE
-  TIME-WAIT
-
-    This should not occur, since a FIN has been received from the
-    remote side.  Ignore the URG.
-
-seventh, process the segment text,
-
-  ESTABLISHED STATE
-  FIN-WAIT-1 STATE
-  FIN-WAIT-2 STATE
-
-    Once in the ESTABLISHED state, it is possible to deliver segment
-    text to user RECEIVE buffers.  Text from segments can be moved
-    into buffers until either the buffer is full or the segment is
-    empty.  If the segment empties and carries an PUSH flag, then
-    the user is informed, when the buffer is returned, that a PUSH
-    has been received.
-
-    When the TCP takes responsibility for delivering the data to the
-    user it must also acknowledge the receipt of the data.
-
-    Once the TCP takes responsibility for the data it advances
-    RCV.NXT over the data accepted, and adjusts RCV.WND as
-    apporopriate to the current buffer availability.  The total of
-    RCV.NXT and RCV.WND should not be reduced.
-
-    Please note the window management suggestions in section 3.7.
-
-    Send an acknowledgment of the form:
-
-      <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
-
-    This acknowledgment should be piggybacked on a segment being
-    transmitted if possible without incurring undue delay.
-
-  CLOSE-WAIT STATE
-  CLOSING STATE
-  LAST-ACK STATE
-  TIME-WAIT STATE
-
-    This should not occur, since a FIN has been received from the
-    remote side.  Ignore the segment text.
-
-eighth, check the FIN bit,
-
-  Do not process the FIN if the state is CLOSED, LISTEN or SYN-SENT
-  since the SEG.SEQ cannot be validated; drop the segment and
-  return.
-
-  If the FIN bit is set, signal the user "connection closing" and
-  return any pending RECEIVEs with same message, advance RCV.NXT
-  over the FIN, and send an acknowledgment for the FIN.  Note that
-  FIN implies PUSH for any segment text not yet delivered to the
-  user.
-
-    SYN-RECEIVED STATE
-    ESTABLISHED STATE
-
-      Enter the CLOSE-WAIT state.
-
-    FIN-WAIT-1 STATE
-
-      If our FIN has been ACKed (perhaps in this segment), then
-      enter TIME-WAIT, start the time-wait timer, turn off the other
-      timers; otherwise enter the CLOSING state.
-
-    FIN-WAIT-2 STATE
-
-      Enter the TIME-WAIT state.  Start the time-wait timer, turn
-      off the other timers.
-
-    CLOSE-WAIT STATE
-
-      Remain in the CLOSE-WAIT state.
-
-    CLOSING STATE
-
-      Remain in the CLOSING state.
-
-    LAST-ACK STATE
-
-      Remain in the LAST-ACK state.
-
-    TIME-WAIT STATE
-
-      Remain in the TIME-WAIT state.  Restart the 2 MSL time-wait
-      timeout.
-
-and return.
