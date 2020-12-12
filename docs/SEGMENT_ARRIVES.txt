@@ -175,77 +175,77 @@ If the state is SYN-SENT then
 
 Otherwise,
 
-first check sequence number
+    first check sequence number
 
-    SYN-RECEIVED STATE
-    ESTABLISHED STATE
-    FIN-WAIT-1 STATE
-    FIN-WAIT-2 STATE
-    CLOSE-WAIT STATE
-    CLOSING STATE
-    LAST-ACK STATE
-    TIME-WAIT STATE
+      SYN-RECEIVED STATE
+      ESTABLISHED STATE
+      FIN-WAIT-1 STATE
+      FIN-WAIT-2 STATE
+      CLOSE-WAIT STATE
+      CLOSING STATE
+      LAST-ACK STATE
+      TIME-WAIT STATE
 
-      Segments are processed in sequence.  Initial tests on
-      arrival are used to discard old duplicates, but further
-      processing is done in SEG.SEQ order.  If a segment's
-      contents straddle the boundary between old and new, only the
-      new parts should be processed.
+        Segments are processed in sequence.  Initial tests on
+        arrival are used to discard old duplicates, but further
+        processing is done in SEG.SEQ order.  If a segment's
+        contents straddle the boundary between old and new, only the
+        new parts should be processed.
 
-      In general, the processing of received segments MUST be
-      implemented to aggregate ACK segments whenever possible
-      (MUST-58).  For example, if the TCP endpoint is processing a
-      series of queued segments, it MUST process them all before
-      sending any ACK segments (MUST-59).
+        In general, the processing of received segments MUST be
+        implemented to aggregate ACK segments whenever possible
+        (MUST-58).  For example, if the TCP endpoint is processing a
+        series of queued segments, it MUST process them all before
+        sending any ACK segments (MUST-59).
 
-      There are four cases for the acceptability test for an
-      incoming segment:
+        There are four cases for the acceptability test for an
+        incoming segment:
 
-    Segment Receive  Test
-    Length  Window
-    ------- -------  -------------------------------------------
+        Segment Receive  Test
+        Length  Window
+        ------- -------  -------------------------------------------
 
-      0       0     SEG.SEQ = RCV.NXT
+          0       0     SEG.SEQ = RCV.NXT
 
-      0      >0     RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
+          0      >0     RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
 
-      >0       0     not acceptable
+          >0       0     not acceptable
 
-      >0      >0     RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
-                  or RCV.NXT =< SEG.SEQ+SEG.LEN-1 < RCV.NXT+RCV.WND
+          >0      >0     RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
+                      or RCV.NXT =< SEG.SEQ+SEG.LEN-1 < RCV.NXT+RCV.WND
 
-      In implementing sequence number validation as described
-      here, please note Appendix A.2.
+        In implementing sequence number validation as described
+        here, please note Appendix A.2.
 
-      If the RCV.WND is zero, no segments will be acceptable, but
-      special allowance should be made to accept valid ACKs, URGs
-      and RSTs.
+        If the RCV.WND is zero, no segments will be acceptable, but
+        special allowance should be made to accept valid ACKs, URGs
+        and RSTs.
 
-      If an incoming segment is not acceptable, an acknowledgment
-      should be sent in reply (unless the RST bit is set, if so
-      drop the segment and return):
+        If an incoming segment is not acceptable, an acknowledgment
+        should be sent in reply (unless the RST bit is set, if so
+        drop the segment and return):
 
-          <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
+            <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
 
-      After sending the acknowledgment, drop the unacceptable
-      segment and return.
+        After sending the acknowledgment, drop the unacceptable
+        segment and return.
 
-      Note that for the TIME-WAIT state, there is an improved
-      algorithm described in [36] for handling incoming SYN
-      segments, that utilizes timestamps rather than relying on
-      the sequence number check described here.  When the improved
-      algorithm is implemented, the logic above is not applicable
-      for incoming SYN segments with timestamp options, received
-      on a connection in the TIME-WAIT state.
+        Note that for the TIME-WAIT state, there is an improved
+        algorithm described in [36] for handling incoming SYN
+        segments, that utilizes timestamps rather than relying on
+        the sequence number check described here.  When the improved
+        algorithm is implemented, the logic above is not applicable
+        for incoming SYN segments with timestamp options, received
+        on a connection in the TIME-WAIT state.
 
-      In the following it is assumed that the segment is the
-      idealized segment that begins at RCV.NXT and does not exceed
-      the window.  One could tailor actual segments to fit this
-      assumption by trimming off any portions that lie outside the
-      window (including SYN and FIN), and only processing further
-      if the segment then begins at RCV.NXT.  Segments with higher
-      beginning sequence numbers SHOULD be held for later
-      processing (SHLD-31).
+        In the following it is assumed that the segment is the
+        idealized segment that begins at RCV.NXT and does not exceed
+        the window.  One could tailor actual segments to fit this
+        assumption by trimming off any portions that lie outside the
+        window (including SYN and FIN), and only processing further
+        if the segment then begins at RCV.NXT.  Segments with higher
+        beginning sequence numbers SHOULD be held for later
+        processing (SHLD-31).
 
     second check the RST bit,
 
@@ -286,7 +286,6 @@ first check sequence number
             If this connection was initiated with a passive OPEN
             (i.e., came from the LISTEN state), then return this
             connection to LISTEN state and return.  The user need
-
             not be informed.  If this connection was initiated
             with an active OPEN (i.e., came from SYN-SENT state)
             then the connection was refused, signal the user

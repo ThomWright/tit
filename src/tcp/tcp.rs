@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use super::connection::Connection;
+use super::connection::UserVisibleError;
 use super::socket_id::{ConnectionId, ListeningSocketId};
 use super::types::*;
 use crate::errors::{Result, TitError};
@@ -53,8 +54,25 @@ impl Tcp {
         let conn_id = ConnectionId::from_incoming(&ip_hdr, &tcp_hdr);
 
         match self.connections.entry(conn_id) {
-            Entry::Occupied(mut c) => {
-                c.get_mut().receive(&tcp_hdr, &payload, &mut res_buf)
+            Entry::Occupied(mut entry) => {
+                let conn = entry.get_mut();
+                let res = conn.receive(&tcp_hdr, &payload, &mut res_buf);
+                if let Some(error) = conn.user_error() {
+                    // TODO: inform the user of any errors
+                    match error {
+                        UserVisibleError::ConnectionRefused => {
+                            println!("connection refused")
+                        }
+                        UserVisibleError::ConnectionReset => {
+                            println!("connection reset")
+                        }
+                    }
+                }
+                if conn.should_delete() {
+                    entry.remove();
+                    // TODO: flush any segment queues
+                }
+                res
             }
             Entry::Vacant(conn_entry) => {
                 // Check we have a matching LISTEN-ing socket
@@ -80,7 +98,7 @@ impl Tcp {
 
                     // third check for a SYN
                     } else if tcp_hdr.syn {
-                        let conn = conn_entry.insert(Connection::new(
+                        let conn = conn_entry.insert(Connection::passive_open(
                             conn_id,
                             &tcp_hdr,
                             &self.seq_gen,
@@ -251,8 +269,12 @@ mod tests {
 
         // ACK ->
         let mut ack_res_buf = [0u8; 1500];
-        let ack_res_len =
-            send_ack(&mut tcp, &syn_ack_hdr, &mut ack_res_buf, client_iss.wrapping_add(1));
+        let ack_res_len = send_ack(
+            &mut tcp,
+            &syn_ack_hdr,
+            &mut ack_res_buf,
+            client_iss.wrapping_add(1),
+        );
 
         assert_eq!(ack_res_len, None, "should be no response to the ACK");
 

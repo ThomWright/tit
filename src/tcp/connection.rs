@@ -61,6 +61,20 @@ impl fmt::Display for State {
     }
 }
 
+/// An error which needs communicating to the user of the connection.
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
+pub enum UserVisibleError {
+    ConnectionRefused,
+    ConnectionReset,
+}
+
+/// How was this connection opened?
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
+enum OpenType {
+    Passive,
+    Active,
+}
+
 /// In the spec this is called a Transmission Control Block (TCB)
 ///
 /// ## Send Sequence Space
@@ -95,6 +109,9 @@ pub struct Connection {
 
     state: State,
 
+    open_type: OpenType,
+    error: Option<UserVisibleError>,
+
     /// Send unacknowledged
     ///
     /// Oldest unacknowledged sequence number
@@ -128,7 +145,7 @@ pub struct Connection {
 }
 
 impl Connection {
-    pub fn new(
+    pub fn passive_open(
         id: ConnectionId,
         hdr: &TcpHeader,
         seq_gen: &SeqGen,
@@ -137,6 +154,8 @@ impl Connection {
         Connection {
             id,
             state: State::SynReceived,
+            open_type: OpenType::Passive,
+            error: None,
             snd_una: iss,
             snd_nxt: iss.wrapping_add(1),
             snd_wnd: 1024,
@@ -157,7 +176,18 @@ impl Connection {
         payload: &[u8],
         mut res_buf: &mut [u8],
     ) -> Result<Option<usize>> {
-        // TODO: first check sequence number
+        if self.state == State::SynSent {
+            // TODO:
+            // first check the ACK bit
+            // second check the RST bit
+            // third check the security
+            // fourth check the SYN bit
+            // fifth, if neither of the SYN or RST bits is set then drop the segment and return.
+        }
+
+        let acceptable_seq = self.acceptable_seq_num(&hdr, &payload);
+
+        // first check sequence number
         match self.state {
             State::SynReceived
             | State::Established
@@ -174,7 +204,7 @@ impl Connection {
                 // should be sent in reply (unless the RST bit is set, if so
                 // drop the segment and return):
                 //     <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
-                if !self.acceptable_seq_num(&hdr, &payload) {
+                if !acceptable_seq {
                     if hdr.rst {
                         return Ok(None);
                     } else {
@@ -186,10 +216,73 @@ impl Connection {
             }
             _ => {}
         }
-        // TODO: NEXT
-        // TODO: second check the RST bit
+
+        // second check the RST bit
+        if hdr.rst {
+            if !acceptable_seq {
+                return Ok(None);
+            } else if hdr.sequence_number == self.rcv_nxt {
+                // TODO: reset connection
+                match self.state {
+                    State::SynReceived => {
+                        // If this connection was initiated with a passive OPEN
+                        // (i.e., came from the LISTEN state), then return this
+                        // connection to LISTEN state and return. The user need
+                        // not be informed.
+                        //
+                        // If this connection was initiated with an active OPEN
+                        // (i.e., came from SYN-SENT state) then the connection
+                        // was refused, signal the user "connection refused".
+                        // Enter the CLOSED state and delete the TCB, and return.
+                        //
+                        // In either case, all segments on the retransmission
+                        // queue should be removed.
+                        match self.open_type {
+                            OpenType::Passive => {
+                                self.state = State::Listen;
+                                return Ok(None);
+                            }
+                            OpenType::Active => {
+                                self.error =
+                                    Some(UserVisibleError::ConnectionRefused);
+                                self.state = State::Closed;
+                                return Ok(None);
+                            }
+                        }
+                    }
+                    State::Established
+                    | State::FinWait1
+                    | State::FinWait2
+                    | State::CloseWait => {
+                        // If the RST bit is set then, any outstanding RECEIVEs and
+                        // SEND should receive "reset" responses.  All segment
+                        // queues should be flushed.  Users should also receive an
+                        // unsolicited general "connection reset" signal.  Enter the
+                        // CLOSED state, delete the TCB, and return.
+                        self.error = Some(UserVisibleError::ConnectionReset);
+                        self.state = State::Closed;
+                        return Ok(None);
+                    }
+                    State::Closing | State::LastAck | State::TimeWait => {
+                        // If the RST bit is set then, enter the CLOSED state,
+                        // delete the TCB, and return.
+                        self.state = State::Closed;
+                        return Ok(None);
+                    }
+                    _ => {}
+                }
+
+                return Ok(None);
+            } else {
+                return self.send_ack(&mut res_buf);
+            }
+        }
+
         // third check security and precedence (nah)
+
+        // TODO: NEXT
         // TODO: fourth, check the SYN bit
+
         // fifth check the ACK field
         if hdr.ack {
             // Note that once in the ESTABLISHED state all segments must carry current acknowledgment information
@@ -199,9 +292,11 @@ impl Connection {
             // if the ACK bit is off drop the segment and return
             Ok(None)
         }
+
         // TODO: sixth, check the URG bit
-        // uhhh we've already dropped the segment... WUT
+
         // TODO: seventh, process the segment text
+
         // TODO: eighth, check the FIN bit
     }
 
@@ -435,6 +530,18 @@ impl Connection {
                 )
             }
         }
+    }
+
+    /// Should the connection state be deleted?
+    pub fn should_delete(&self) -> bool {
+        match self.state {
+            State::Closed | State::Listen => true,
+            _ => false,
+        }
+    }
+
+    pub fn user_error(&self) -> Option<UserVisibleError> {
+        self.error
     }
 }
 
