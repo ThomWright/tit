@@ -195,7 +195,10 @@ mod tests {
     };
     use std::net::Ipv4Addr;
 
-    const TEST_PORT: PortNum = 4434;
+    const SERVER_ADDR: [u8; 4] = [192, 168, 0, 1];
+    const CLIENT_ADDR: [u8; 4] = [127, 0, 0, 1];
+    const SERVER_PORT: PortNum = 4434;
+    const CLIENT_PORT: PortNum = 4321;
 
     #[test]
     fn closed_socket_syn() {
@@ -226,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn original_syn() {
+    fn passive_open_original_syn() {
         let mut tcp = new_listening_tcp();
 
         let client_iss = 0;
@@ -240,12 +243,18 @@ mod tests {
             "response length should be size of IP+TCP headers"
         );
 
-        let (_, res_tcp_hdr, payload_len) =
+        let (res_ip_hdr, res_tcp_hdr, payload_len) =
             extract_headers(&res_buf[..res_len.unwrap()]);
 
         assert_eq!(payload_len, 0, "should respond with no payload");
-        // let res_ip_hdr = res_hdrs.ip.unwrap();
-        // TODO: assert we're responding to/from the correct IP
+        assert!(matches!(res_ip_hdr, IpHeader::Version4(..)));
+        match res_ip_hdr {
+            IpHeader::Version4(hdr) => {
+                assert_eq!(hdr.destination, CLIENT_ADDR);
+                assert_eq!(hdr.source, SERVER_ADDR);
+            }
+            _ => panic!("expected IPv4"),
+        }
         assert_eq!(res_tcp_hdr.syn, true, "should respond with a SYN");
         assert_eq!(res_tcp_hdr.ack, true, "should respond with an ACK");
         assert_eq!(
@@ -253,10 +262,21 @@ mod tests {
             client_iss + 1,
             "response should acknowledge the correct sequence number"
         );
+        assert!(
+            tcp.connections
+                .get(&ConnectionId::V4 {
+                    remote_addr: Ipv4Addr::from(CLIENT_ADDR),
+                    remote_port: CLIENT_PORT,
+                    local_addr: Ipv4Addr::from(SERVER_ADDR),
+                    local_port: SERVER_PORT,
+                })
+                .is_some(),
+            "connection should exist"
+        );
     }
 
     #[test]
-    fn three_way() {
+    fn passive_open_three_way() {
         let mut tcp = new_listening_tcp();
 
         let client_iss = 0;
@@ -280,7 +300,8 @@ mod tests {
 
         assert_eq!(ack_res_len, None, "should be no response to the ACK");
 
-        // TODO: assert state of `tcp`
+        // TODO: assert state of `tcp` - connection should be ESTABLISHED
+        // but that's private, so would need to test in connection.rs
     }
 
     #[test]
@@ -303,7 +324,7 @@ mod tests {
 
     #[test]
     #[ignore]
-    fn unaccpeptable_seq_num() {
+    fn unacceptable_seq_num() {
         // TODO: should receive an ACK in response
     }
 
@@ -355,14 +376,14 @@ mod tests {
         payload: &[u8],
         seq_num: LocalSeqNum,
     ) -> (Ipv4Header, TcpHeader) {
-        let tcp_hdr = TcpHeader::new(4321, TEST_PORT, seq_num, 1024);
+        let tcp_hdr = TcpHeader::new(CLIENT_PORT, SERVER_PORT, seq_num, 1024);
 
         let ip_hdr = Ipv4Header::new(
             tcp_hdr.header_len() + payload.len() as u16,
             64,
             IpTrafficClass::Tcp,
-            [192, 168, 0, 1],
-            [127, 0, 0, 1],
+            CLIENT_ADDR,
+            SERVER_ADDR,
         );
 
         (ip_hdr, tcp_hdr)
@@ -373,8 +394,8 @@ mod tests {
         tcp.listen(ListeningSocketId::V4 {
             remote_addr: Ipv4Addr::UNSPECIFIED,
             remote_port: None,
-            local_addr: Ipv4Addr::LOCALHOST,
-            local_port: TEST_PORT,
+            local_addr: Ipv4Addr::from(SERVER_ADDR),
+            local_port: SERVER_PORT,
         })
         .unwrap();
         tcp
