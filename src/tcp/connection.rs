@@ -427,8 +427,12 @@ impl Connection {
         mut res_buf: &mut [u8],
         reason: &str,
     ) -> Result<Option<usize>> {
-        println!("Sending RST - State: {} - Reason: {}", self.state, reason);
-        Connection::send_rst_packet(&self.id, seq_num, &mut res_buf)
+        Connection::send_rst_packet(
+            &self.id,
+            seq_num,
+            &mut res_buf,
+            &format!("{} - State: {}", reason, self.state),
+        )
     }
 
     fn create_packet_builder(&self) -> PacketBuilderStep<IpHeader> {
@@ -464,7 +468,10 @@ impl Connection {
         conn_id: &ConnectionId,
         seq_num: LocalSeqNum,
         mut res_buf: &mut [u8],
+        reason: &str,
     ) -> Result<Option<usize>> {
+        println!("Sending RST - Reason: {}", reason);
+
         let res = Connection::create_packet_builder_for(&conn_id)
             .tcp(conn_id.local_port(), conn_id.remote_port(), seq_num, 0)
             .rst();

@@ -94,6 +94,7 @@ impl Tcp {
                             &conn_id,
                             tcp_hdr.acknowledgment_number,
                             &mut res_buf,
+                            "ACK received in LISTEN state",
                         )
 
                     // third check for a SYN
@@ -125,6 +126,7 @@ impl Tcp {
                                 &conn_id,
                                 tcp_hdr.acknowledgment_number,
                                 &mut res_buf,
+                                "ACK received in CLOSED state",
                             )
                         } else {
                             // <SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>
