@@ -10,6 +10,8 @@ const IP: Ipv4Addr = Ipv4Addr::new(10, 0, 0, 10);
 const PORT: u16 = 4433;
 
 fn main() -> Result<(), TitError> {
+    // TODO: take CLI params to control active/passive open (similar to netcat)
+
     print_tcp_key();
     println!();
 

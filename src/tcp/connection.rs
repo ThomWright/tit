@@ -222,7 +222,6 @@ impl Connection {
             if !acceptable_seq {
                 return Ok(None);
             } else if hdr.sequence_number == self.rcv_nxt {
-                // TODO: reset connection
                 match self.state {
                     State::SynReceived => {
                         // If this connection was initiated with a passive OPEN
@@ -280,74 +279,14 @@ impl Connection {
 
         // third check security and precedence (nah)
 
-        // TODO: NEXT
-        // TODO: fourth, check the SYN bit
-
-        // fifth check the ACK field
-        if hdr.ack {
-            // Note that once in the ESTABLISHED state all segments must carry current acknowledgment information
-            // TODO: in some (all?) cases we don't want to return here, we want to keep processing
-            self.receive_ack(&hdr, &mut res_buf)
-        } else {
-            // if the ACK bit is off drop the segment and return
-            Ok(None)
-        }
-
-        // TODO: sixth, check the URG bit
-
-        // TODO: seventh, process the segment text
-
-        // TODO: eighth, check the FIN bit
-    }
-
-    fn receive_ack(
-        &mut self,
-        hdr: &TcpHeader,
-        mut res_buf: &mut [u8],
-    ) -> Result<Option<usize>> {
-        if self.state == State::SynReceived {
-            if self.acceptable_ack(hdr) {
-                // enter ESTABLISHED state and continue processing
-                self.state = State::Established;
-            // TODO:
-            // SND.WND <- SEG.WND
-            // SND.WL1 <- SEG.SEQ
-            // SND.WL2 <- SEG.ACK
-            } else {
-                return self.send_rst(
-                    hdr.acknowledgment_number,
-                    &mut res_buf,
-                    "unacceptable ACK",
-                );
-            }
-        }
-
+        // fourth, check the SYN bit
         match self.state {
-            State::Established
-            | State::FinWait1
-            | State::FinWait2
-            | State::CloseWait
-            | State::Closing => {
-                if self.acceptable_ack(hdr) {
-                    self.snd_una = hdr.acknowledgment_number;
-                    // TODO: remove acknowledged segments from the retransmission queue
-                    // TODO: the send window should be updated
-                }
+            State::SynReceived => {
+                // If the connection was initiated with a passive OPEN, then
+                // return this connection to the LISTEN state and return.
+                self.state = State::Listen;
+                return Ok(None);
             }
-            _ => {}
-        }
-
-        if self.state == State::FinWait1 {
-            // TODO: if our FIN is now acknowledged then enter FIN-WAIT-2 and continue processing in that state
-        }
-        if self.state == State::FinWait2 {
-            // TODO: if the retransmission queue is empty, the user's CLOSE can be acknowledged ("ok") but do not delete the TCB
-        }
-        if self.state == State::Closing {
-            // TODO: if the ACK acknowledges our FIN then enter the TIME-WAIT state, otherwise ignore the segment
-        }
-
-        match self.state {
             State::Established
             | State::FinWait1
             | State::FinWait2
@@ -355,25 +294,103 @@ impl Connection {
             | State::Closing
             | State::LastAck
             | State::TimeWait => {
-                if !self.acceptable_ack(hdr) {
-                    // If the ACK is a duplicate (SEG.ACK < SND.UNA), it can be ignored.
+                // TODO: For the TIME-WAIT state, new connections can be accepted
+                // if the timestamp option is used and meets expectations
 
-                    // If the ACK acks something not yet sent (SEG.ACK > SND.NXT) then send an ACK,
-                    // drop the segment, and return.
-                    if wrapping_lt(self.snd_nxt, hdr.acknowledgment_number) {
-                        // If the connection is in a synchronized state (ESTABLISHED,
-                        // FIN-WAIT-1, FIN-WAIT-2, CLOSE-WAIT, CLOSING, LAST-ACK, TIME-WAIT),
-                        // any unacceptable segment (out of window sequence number or
-                        // unacceptible acknowledgment number) must elicit only an empty
-                        // acknowledgment segment containing the current send-sequence number
-                        // and an acknowledgment indicating the next sequence number expected
-                        // to be received, and the connection remains in the same state.
-                        return self.send_ack(&mut res_buf);
-                    }
-                }
+                // RFC 5961: If the SYN bit is set, irrespective of the sequence number, TCP
+                // MUST send an ACK (also referred to as challenge ACK) to the remote
+                // peer
+                return self.send_ack(&mut res_buf);
             }
             _ => {}
         }
+
+        // fifth check the ACK field
+        if hdr.ack {
+            // Note that once in the ESTABLISHED state all segments must carry current acknowledgment information
+            if self.state == State::SynReceived {
+                if self.acceptable_ack(hdr) {
+                    // enter ESTABLISHED state and continue processing
+                    self.state = State::Established;
+                // TODO:
+                // SND.WND <- SEG.WND
+                // SND.WL1 <- SEG.SEQ
+                // SND.WL2 <- SEG.ACK
+                } else {
+                    return self.send_rst(
+                        hdr.acknowledgment_number,
+                        &mut res_buf,
+                        "unacceptable ACK",
+                    );
+                }
+            }
+
+            match self.state {
+                State::Established
+                | State::FinWait1
+                | State::FinWait2
+                | State::CloseWait
+                | State::Closing => {
+                    if self.acceptable_ack(hdr) {
+                        self.snd_una = hdr.acknowledgment_number;
+                        // TODO: remove acknowledged segments from the retransmission queue
+                        // TODO: the send window should be updated
+                    }
+                }
+                _ => {}
+            }
+
+            if self.state == State::FinWait1 {
+                // TODO: if our FIN is now acknowledged then enter FIN-WAIT-2 and continue processing in that state
+            }
+            if self.state == State::FinWait2 {
+                // TODO: if the retransmission queue is empty, the user's CLOSE can be acknowledged ("ok") but do not delete the TCB
+            }
+            if self.state == State::Closing {
+                // TODO: if the ACK acknowledges our FIN then enter the TIME-WAIT state, otherwise ignore the segment
+            }
+
+            match self.state {
+                State::Established
+                | State::FinWait1
+                | State::FinWait2
+                | State::CloseWait
+                | State::Closing
+                | State::LastAck
+                | State::TimeWait => {
+                    if !self.acceptable_ack(hdr) {
+                        // If the ACK acks something not yet sent (SEG.ACK > SND.NXT) then send an ACK,
+                        // drop the segment, and return.
+                        if wrapping_lt(self.snd_nxt, hdr.acknowledgment_number)
+                        {
+                            // If the connection is in a synchronized state (ESTABLISHED,
+                            // FIN-WAIT-1, FIN-WAIT-2, CLOSE-WAIT, CLOSING, LAST-ACK, TIME-WAIT),
+                            // any unacceptable segment (out of window sequence number or
+                            // unacceptible acknowledgment number) must elicit only an empty
+                            // acknowledgment segment containing the current send-sequence number
+                            // and an acknowledgment indicating the next sequence number expected
+                            // to be received, and the connection remains in the same state.
+                            return self.send_ack(&mut res_buf);
+
+                        // If the ACK is a duplicate (SEG.ACK < SND.UNA), it can be ignored.
+                        } else {
+                            return Ok(None);
+                        }
+                    }
+                }
+                _ => {}
+            };
+        } else {
+            // if the ACK bit is off drop the segment and return
+            return Ok(None);
+        }
+
+        // TODO: NEXT
+        // TODO: sixth, check the URG bit
+
+        // TODO: seventh, process the segment text
+
+        // TODO: eighth, check the FIN bit
 
         Ok(None)
     }
@@ -501,6 +518,7 @@ impl Connection {
         return Ok(Some(res_len));
     }
 
+    /// `SND.UNA < SEG.ACK =< SND.NXT`
     fn acceptable_ack(&self, hdr: &TcpHeader) -> bool {
         acceptable_ack(self.snd_una, hdr.acknowledgment_number, self.snd_nxt)
     }
