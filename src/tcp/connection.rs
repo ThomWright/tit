@@ -55,6 +55,21 @@ enum State {
     Closed,
 }
 
+impl State {
+    fn is_synchronized(&self) -> bool {
+        match self {
+            State::Established => true,
+            State::FinWait1 => true,
+            State::FinWait2 => true,
+            State::CloseWait => true,
+            State::Closing => true,
+            State::LastAck => true,
+            State::TimeWait => true,
+            _ => false,
+        }
+    }
+}
+
 impl fmt::Display for State {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self)
@@ -74,6 +89,19 @@ enum OpenType {
     Passive,
     Active,
 }
+
+/// A new state variable MAX.SND.WND is defined as the largest window
+/// that the local sender has ever received from its peer.
+///
+/// Implementations can also chose to hard code the MAX.SND.WND value to
+/// the maximum permissible window size, i.e., 65535 in the absence of
+/// window scaling.  In the presence of the window scaling option, the
+/// value becomes (MAX.SND.WND << Snd.Wind.Scale).
+///
+/// TODO: track this in state.
+///
+/// [RFC](https://tools.ietf.org/html/rfc5961#section-5)
+const MAX_SND_WND: u32 = 65_535;
 
 /// In the spec this is called a Transmission Control Block (TCB)
 ///
@@ -118,8 +146,12 @@ pub struct Connection {
     snd_una: LocalSeqNum,
     /// Send next
     ///
-    /// Next sequence number to be sent
+    /// Next sequence number to be sent (drops back on retransmission?)
     snd_nxt: LocalSeqNum,
+    /// Max sequence number sent
+    snd_max: LocalSeqNum,
+    /// The sequence number of the sent FIN (if sent)
+    snd_fin: Option<LocalSeqNum>,
     /// Send window
     snd_wnd: WindowSize,
     /// Send urgent pointer
@@ -151,13 +183,16 @@ impl Connection {
         seq_gen: &SeqGen,
     ) -> Connection {
         let iss = seq_gen.gen_iss();
+        let snd_nxt = iss.wrapping_add(1);
         Connection {
             id,
             state: State::SynReceived,
             open_type: OpenType::Passive,
             error: None,
             snd_una: iss,
-            snd_nxt: iss.wrapping_add(1),
+            snd_nxt: snd_nxt,
+            snd_max: snd_nxt,
+            snd_fin: None,
             snd_wnd: 1024,
             snd_up: false,
             snd_wl1: 0,
@@ -188,38 +223,29 @@ impl Connection {
         let acceptable_seq = self.acceptable_seq_num(&hdr, &payload);
 
         // first check sequence number
-        match self.state {
-            State::SynReceived
-            | State::Established
-            | State::FinWait1
-            | State::FinWait2
-            | State::CloseWait
-            | State::Closing
-            | State::LastAck
-            | State::TimeWait => {
-                // TODO: If the RCV.WND is zero, no segments will be acceptable,
-                // but special allowance should be made to accept valid ACKs, URGs and RSTs.
+        if self.state.is_synchronized() {
+            // TODO: If the RCV.WND is zero, no segments will be acceptable,
+            // but special allowance should be made to accept valid ACKs, URGs and RSTs.
 
-                // If an incoming segment is not acceptable, an acknowledgment
-                // should be sent in reply (unless the RST bit is set, if so
-                // drop the segment and return):
-                //     <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
-                if !acceptable_seq {
-                    if hdr.rst {
-                        return Ok(None);
-                    } else {
-                        return self.send_ack(&mut res_buf);
-                        // After sending the acknowledgment, drop the unacceptable
-                        // segment and return.
-                    }
+            // If an incoming segment is not acceptable, an acknowledgment
+            // should be sent in reply (unless the RST bit is set, if so
+            // drop the segment and return):
+            //     <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
+            if !acceptable_seq {
+                if hdr.rst {
+                    return Ok(None);
+                } else {
+                    return self.send_ack(&mut res_buf);
+                    // After sending the acknowledgment, drop the unacceptable
+                    // segment and return.
                 }
             }
-            _ => {}
         }
 
         // second check the RST bit
         if hdr.rst {
             if !acceptable_seq {
+                // FIXME: redundant check
                 return Ok(None);
             } else if hdr.sequence_number == self.rcv_nxt {
                 match self.state {
@@ -306,83 +332,106 @@ impl Connection {
         }
 
         // fifth check the ACK field
-        if hdr.ack {
-            // Note that once in the ESTABLISHED state all segments must carry current acknowledgment information
-            if self.state == State::SynReceived {
-                if self.acceptable_ack(hdr) {
-                    // enter ESTABLISHED state and continue processing
-                    self.state = State::Established;
-                // TODO:
-                // SND.WND <- SEG.WND
-                // SND.WL1 <- SEG.SEQ
-                // SND.WL2 <- SEG.ACK
-                } else {
-                    return self.send_rst(
-                        hdr.acknowledgment_number,
-                        &mut res_buf,
-                        "unacceptable ACK",
-                    );
-                }
-            }
-
-            match self.state {
-                State::Established
-                | State::FinWait1
-                | State::FinWait2
-                | State::CloseWait
-                | State::Closing => {
-                    if self.acceptable_ack(hdr) {
-                        self.snd_una = hdr.acknowledgment_number;
-                        // TODO: remove acknowledged segments from the retransmission queue
-                        // TODO: the send window should be updated
-                    }
-                }
-                _ => {}
-            }
-
-            if self.state == State::FinWait1 {
-                // TODO: if our FIN is now acknowledged then enter FIN-WAIT-2 and continue processing in that state
-            }
-            if self.state == State::FinWait2 {
-                // TODO: if the retransmission queue is empty, the user's CLOSE can be acknowledged ("ok") but do not delete the TCB
-            }
-            if self.state == State::Closing {
-                // TODO: if the ACK acknowledges our FIN then enter the TIME-WAIT state, otherwise ignore the segment
-            }
-
-            match self.state {
-                State::Established
-                | State::FinWait1
-                | State::FinWait2
-                | State::CloseWait
-                | State::Closing
-                | State::LastAck
-                | State::TimeWait => {
-                    if !self.acceptable_ack(hdr) {
-                        // If the ACK acks something not yet sent (SEG.ACK > SND.NXT) then send an ACK,
-                        // drop the segment, and return.
-                        if wrapping_lt(self.snd_nxt, hdr.acknowledgment_number)
-                        {
-                            // If the connection is in a synchronized state (ESTABLISHED,
-                            // FIN-WAIT-1, FIN-WAIT-2, CLOSE-WAIT, CLOSING, LAST-ACK, TIME-WAIT),
-                            // any unacceptable segment (out of window sequence number or
-                            // unacceptible acknowledgment number) must elicit only an empty
-                            // acknowledgment segment containing the current send-sequence number
-                            // and an acknowledgment indicating the next sequence number expected
-                            // to be received, and the connection remains in the same state.
-                            return self.send_ack(&mut res_buf);
-
-                        // If the ACK is a duplicate (SEG.ACK < SND.UNA), it can be ignored.
-                        } else {
-                            return Ok(None);
-                        }
-                    }
-                }
-                _ => {}
-            };
-        } else {
+        if !hdr.ack {
             // if the ACK bit is off drop the segment and return
             return Ok(None);
+        }
+
+        // TCP stacks that implement RFC 5961 MUST add an input check that
+        // the ACK value is acceptable only if it is in the range of
+        // ((SND.UNA - MAX.SND.WND) =< SEG.ACK =< SND.NXT).
+        // All incoming segments whose ACK value doesn't satisfy the above
+        // condition MUST be discarded and an ACK sent back.
+        if !(self.acceptable_ack_rfc5961(&hdr)) {
+            return self.send_ack(&mut res_buf);
+        }
+
+        // Note that once in the ESTABLISHED state all segments must carry current acknowledgment information
+        if self.state == State::SynReceived {
+            if self.acceptable_ack(hdr) {
+                // enter ESTABLISHED state and continue processing
+                self.state = State::Established;
+
+                self.snd_wnd = hdr.window_size;
+                self.snd_wl1 = hdr.sequence_number;
+                self.snd_wl2 = hdr.acknowledgment_number;
+            } else {
+                return self.send_rst(
+                    hdr.acknowledgment_number,
+                    &mut res_buf,
+                    "unacceptable ACK",
+                );
+            }
+        }
+
+        if self.state.is_synchronized() {
+            if !self.acceptable_ack(hdr) {
+                // If the ACK acks something not yet sent (SEG.ACK > SND.NXT) then send an ACK,
+                // drop the segment, and return.
+                if wrapping_lt(self.snd_nxt, hdr.acknowledgment_number) {
+                    return self.send_ack(&mut res_buf);
+                }
+                // If the ACK is a duplicate (SEG.ACK < SND.UNA), it can be ignored.
+            }
+        };
+
+        match self.state {
+            State::Established
+            | State::FinWait1
+            | State::FinWait2
+            | State::CloseWait
+            | State::Closing => {
+                if self.acceptable_ack(hdr) {
+                    self.snd_una = hdr.acknowledgment_number;
+                    // TODO: remove acknowledged segments from the retransmission queue
+                    // TODO: Users should receive positive acknowledgments for buffers that have been SENT and fully acknowledged
+                    // (i.e., SEND buffer should be returned with "ok" response)
+
+                    // TODO: the send window should be updated
+                    // If (SND.WL1 < SEG.SEQ or (SND.WL1
+                    // = SEG.SEQ and SND.WL2 =< SEG.ACK)), set SND.WND <-
+                    // SEG.WND, set SND.WL1 <- SEG.SEQ, and set SND.WL2 <-
+                    // SEG.ACK.
+
+                    // Note that SND.WND is an offset from SND.UNA, that
+                    // SND.WL1 records the sequence number of the last
+                    // segment used to update SND.WND, and that SND.WL2
+                    // records the acknowledgment number of the last segment
+                    // used to update SND.WND.  The check here prevents using
+                    // old segments to update the window.
+
+                    let fin_acked = self
+                        .snd_fin
+                        .map_or(false, |fin_seq| self.snd_una == fin_seq);
+
+                    if self.state == State::FinWait1 && fin_acked {
+                        // if our FIN is now acknowledged then enter FIN-WAIT-2 and continue processing in that state
+                        self.state = State::FinWait2;
+                    }
+                    if self.state == State::FinWait2 {
+                        // TODO: if the retransmission queue is empty, the user's CLOSE can be acknowledged ("ok") but do not delete the TCB
+                    }
+                    if self.state == State::Closing && fin_acked {
+                        // if the ACK acknowledges our FIN then enter the TIME-WAIT state, otherwise ignore the segment
+                        self.state = State::TimeWait;
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        if self.state == State::LastAck {
+            // TODO: wut
+            // The only thing that can arrive in this state is an
+            // acknowledgment of our FIN.  If our FIN is now
+            // acknowledged, delete the TCB, enter the CLOSED state,
+            // and return.
+        }
+        if self.state == State::TimeWait {
+            // TODO: wut
+            // The only thing that can arrive in this state is a
+            // retransmission of the remote FIN.  Acknowledge it, and
+            // restart the 2 MSL timeout.
         }
 
         // TODO: NEXT
@@ -518,6 +567,18 @@ impl Connection {
         return Ok(Some(res_len));
     }
 
+    /// TODO: more descriptive name
+    /// `(SND.UNA - MAX.SND.WND) <= SEG.ACK <=SND.NXT`
+    fn acceptable_ack_rfc5961(&self, hdr: &TcpHeader) -> bool {
+        wrapping_lt(
+            self.snd_una.wrapping_sub(MAX_SND_WND).wrapping_sub(1),
+            hdr.acknowledgment_number,
+        ) && wrapping_lt(
+            hdr.acknowledgment_number,
+            self.snd_nxt.wrapping_add(1),
+        )
+    }
+
     /// `SND.UNA < SEG.ACK =< SND.NXT`
     fn acceptable_ack(&self, hdr: &TcpHeader) -> bool {
         acceptable_ack(self.snd_una, hdr.acknowledgment_number, self.snd_nxt)
@@ -573,6 +634,8 @@ impl Connection {
 /// Is SEG.ACK acceptable, given SND.UNA and SND.NXT?
 ///
 /// This wraps around the u32 number space.
+///
+/// A new acknowledgment (called an "acceptable ack"), is one for which the inequality below holds:
 ///
 /// `SND.UNA < SEG.ACK =< SND.NXT`
 ///
