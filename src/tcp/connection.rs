@@ -132,6 +132,7 @@ const MAX_SND_WND: u32 = 65_535;
 /// 2. sequence numbers allowed for new reception
 /// 3. future sequence numbers which are not yet allowed
 #[allow(dead_code)]
+#[derive(Debug)]
 pub struct Connection {
     id: ConnectionId,
 
@@ -244,9 +245,9 @@ impl Connection {
 
         // second check the RST bit
         if hdr.rst {
-            if !acceptable_seq {
+            return if !acceptable_seq {
                 // FIXME: redundant check
-                return Ok(None);
+                Ok(None)
             } else if hdr.sequence_number == self.rcv_nxt {
                 match self.state {
                     State::SynReceived => {
@@ -265,13 +266,13 @@ impl Connection {
                         match self.open_type {
                             OpenType::Passive => {
                                 self.state = State::Listen;
-                                return Ok(None);
+                                Ok(None)
                             }
                             OpenType::Active => {
                                 self.error =
                                     Some(UserVisibleError::ConnectionRefused);
                                 self.state = State::Closed;
-                                return Ok(None);
+                                Ok(None)
                             }
                         }
                     }
@@ -286,49 +287,49 @@ impl Connection {
                         // CLOSED state, delete the TCB, and return.
                         self.error = Some(UserVisibleError::ConnectionReset);
                         self.state = State::Closed;
-                        return Ok(None);
+                        Ok(None)
                     }
                     State::Closing | State::LastAck | State::TimeWait => {
                         // If the RST bit is set then, enter the CLOSED state,
                         // delete the TCB, and return.
                         self.state = State::Closed;
-                        return Ok(None);
+                        Ok(None)
                     }
-                    _ => {}
+                    _ => panic!("received RST in unexpected state"),
                 }
-
-                return Ok(None);
             } else {
-                return self.send_ack(&mut res_buf);
-            }
+                self.send_ack(&mut res_buf)
+            };
         }
 
         // third check security and precedence (nah)
 
         // fourth, check the SYN bit
-        match self.state {
-            State::SynReceived => {
-                // If the connection was initiated with a passive OPEN, then
-                // return this connection to the LISTEN state and return.
-                self.state = State::Listen;
-                return Ok(None);
-            }
-            State::Established
-            | State::FinWait1
-            | State::FinWait2
-            | State::CloseWait
-            | State::Closing
-            | State::LastAck
-            | State::TimeWait => {
-                // TODO: For the TIME-WAIT state, new connections can be accepted
-                // if the timestamp option is used and meets expectations
+        if hdr.syn {
+            match self.state {
+                State::SynReceived => {
+                    // If the connection was initiated with a passive OPEN, then
+                    // return this connection to the LISTEN state and return.
+                    self.state = State::Listen;
+                    return Ok(None);
+                }
+                State::Established
+                | State::FinWait1
+                | State::FinWait2
+                | State::CloseWait
+                | State::Closing
+                | State::LastAck
+                | State::TimeWait => {
+                    // TODO: For the TIME-WAIT state, new connections can be accepted
+                    // if the timestamp option is used and meets expectations
 
-                // RFC 5961: If the SYN bit is set, irrespective of the sequence number, TCP
-                // MUST send an ACK (also referred to as challenge ACK) to the remote
-                // peer
-                return self.send_ack(&mut res_buf);
+                    // RFC 5961: If the SYN bit is set, irrespective of the sequence number, TCP
+                    // MUST send an ACK (also referred to as challenge ACK) to the remote
+                    // peer
+                    return self.send_ack(&mut res_buf);
+                }
+                _ => {}
             }
-            _ => {}
         }
 
         // fifth check the ACK field
@@ -336,6 +337,7 @@ impl Connection {
             // if the ACK bit is off drop the segment and return
             return Ok(None);
         }
+        // Note that once in the ESTABLISHED state all segments must carry current acknowledgment information
 
         // TCP stacks that implement RFC 5961 MUST add an input check that
         // the ACK value is acceptable only if it is in the range of
@@ -346,7 +348,6 @@ impl Connection {
             return self.send_ack(&mut res_buf);
         }
 
-        // Note that once in the ESTABLISHED state all segments must carry current acknowledgment information
         if self.state == State::SynReceived {
             if self.acceptable_ack(hdr) {
                 // enter ESTABLISHED state and continue processing
