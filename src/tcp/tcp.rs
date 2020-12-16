@@ -5,12 +5,14 @@ use std::net::SocketAddr;
 
 use super::connection::Connection;
 use super::connection::UserVisibleError;
-use super::socket_id::{ConnectionId, ListeningSocketId};
+use super::connection_id::ConnectionId;
 use super::types::*;
 use crate::errors::{Result, TitError};
 
 pub struct Tcp {
-    listening_sockets: HashMap<SocketAddr, ListeningSocketId>,
+    /// On Linux it looks like if SO_REUSEPORT is set then we can get a stack of listening sockets on the same port.
+    /// Let's not bother with that for now.
+    listening_sockets: HashMap<PortNum, SocketAddr>,
     connections: HashMap<ConnectionId, Connection>,
     seq_gen: SeqGen,
 }
@@ -24,9 +26,8 @@ impl Tcp {
         }
     }
 
-    pub fn listen(&mut self, socket: ListeningSocketId) -> Result<()> {
-        let ls = socket.local_socket();
-        match self.listening_sockets.entry(ls) {
+    pub fn listen(&mut self, socket: SocketAddr) -> Result<()> {
+        match self.listening_sockets.entry(socket.port()) {
             Entry::Occupied(_) => Err(TitError::EADDRINUSE),
             Entry::Vacant(entry) => {
                 entry.insert(socket);
@@ -76,10 +77,15 @@ impl Tcp {
             }
             Entry::Vacant(conn_entry) => {
                 // Check we have a matching LISTEN-ing socket
+                let local = &conn_id.local_socket();
                 if self
                     .listening_sockets
-                    .get(&conn_id.local_socket())
-                    .filter(|s| s.matches(&conn_id))
+                    .get(&local.port())
+                    .filter(|listening| {
+                        println!("{} - {}", listening, local);
+                        listening.ip().is_unspecified()
+                            || listening.ip().eq(&local.ip())
+                    })
                     .is_some()
                 {
                     // State: LISTEN
@@ -137,6 +143,7 @@ impl Tcp {
                                 tcp_hdr.sequence_number
                                     + segment_length(&tcp_hdr, &payload),
                                 &mut res_buf,
+                                "SYN received in CLOSED state",
                             )
                         }
                     }
@@ -193,7 +200,7 @@ mod tests {
         IpHeader, IpTrafficClass, Ipv4Header, PacketHeaders, SerializedSize,
         TcpHeader, TCP_MINIMUM_HEADER_SIZE,
     };
-    use std::net::Ipv4Addr;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddrV4};
 
     const SERVER_ADDR: [u8; 4] = [192, 168, 0, 1];
     const CLIENT_ADDR: [u8; 4] = [127, 0, 0, 1];
@@ -265,10 +272,14 @@ mod tests {
         assert!(
             tcp.connections
                 .get(&ConnectionId::V4 {
-                    remote_addr: Ipv4Addr::from(CLIENT_ADDR),
-                    remote_port: CLIENT_PORT,
-                    local_addr: Ipv4Addr::from(SERVER_ADDR),
-                    local_port: SERVER_PORT,
+                    remote_socket: SocketAddrV4::new(
+                        Ipv4Addr::from(CLIENT_ADDR),
+                        CLIENT_PORT
+                    ),
+                    local_socket: SocketAddrV4::new(
+                        Ipv4Addr::from(SERVER_ADDR),
+                        SERVER_PORT
+                    ),
                 })
                 .is_some(),
             "connection should exist"
@@ -391,12 +402,10 @@ mod tests {
 
     fn new_listening_tcp() -> Tcp {
         let mut tcp = Tcp::new();
-        tcp.listen(ListeningSocketId::V4 {
-            remote_addr: Ipv4Addr::UNSPECIFIED,
-            remote_port: None,
-            local_addr: Ipv4Addr::from(SERVER_ADDR),
-            local_port: SERVER_PORT,
-        })
+        tcp.listen(SocketAddr::new(
+            IpAddr::from(Ipv4Addr::UNSPECIFIED),
+            SERVER_PORT,
+        ))
         .unwrap();
         tcp
     }

@@ -4,11 +4,11 @@ use std::net::SocketAddr;
 
 use tit::print_tcp_key;
 use tit::Interface;
-use tit::ListeningSocketId;
 use tit::Tcp;
 use tit::TitError;
 
-const IP: Ipv4Addr = Ipv4Addr::new(10, 0, 0, 10);
+const IP: Ipv4Addr = Ipv4Addr::UNSPECIFIED;
+// const IP: Ipv4Addr = Ipv4Addr::new(10, 0, 0, 10);
 const PORT: u16 = 4433;
 
 fn main() -> Result<(), TitError> {
@@ -18,10 +18,7 @@ fn main() -> Result<(), TitError> {
     println!();
 
     let mut tcp_impl = Tcp::new();
-    tcp_impl.listen(ListeningSocketId::any_remote(SocketAddr::new(
-        IpAddr::from(IP),
-        PORT,
-    )))?;
+    tcp_impl.listen(SocketAddr::new(IpAddr::from(IP), PORT))?;
 
     let interface = Interface::new(tcp_impl)?;
     interface.listen()?;

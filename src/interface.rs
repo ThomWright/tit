@@ -20,6 +20,10 @@ impl Interface {
             tun_tap::Mode::Tun,
         )?;
 
+        // TODO: start new thread with the listen loop
+        // keep reference to the join handle
+        // `tcp` will need to be behind a Mutex
+
         Ok(Interface {
             tun: iface,
             tcp: tcp_impl,

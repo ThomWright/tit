@@ -1,7 +1,7 @@
 mod connection;
-mod socket_id;
+mod connection_id;
 mod tcp;
 mod types;
 
-pub use socket_id::{ConnectionId, ListeningSocketId};
+pub use connection_id::ConnectionId;
 pub use tcp::Tcp;

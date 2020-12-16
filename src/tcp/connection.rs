@@ -4,7 +4,7 @@ use etherparse::{
 };
 use std::fmt;
 
-use super::socket_id::ConnectionId;
+use super::connection_id::ConnectionId;
 use super::tcp::SeqGen;
 use super::types::*;
 use crate::errors::Result;
@@ -511,20 +511,18 @@ impl Connection {
     ) -> PacketBuilderStep<IpHeader> {
         PacketBuilder::ip(match conn_id {
             ConnectionId::V4 {
-                local_addr,
-                remote_addr,
-                ..
+                remote_socket,
+                local_socket,
             } => IpHeader::Version4(Ipv4Header::new(
                 0,
                 64,
                 IpTrafficClass::Tcp,
-                local_addr.octets(),
-                remote_addr.octets(),
+                local_socket.ip().octets(),
+                remote_socket.ip().octets(),
             )),
             ConnectionId::V6 {
-                local_addr: _,
-                remote_addr: _,
-                ..
+                remote_socket: _,
+                local_socket: _,
             } => unimplemented!(
             "Ipv6Header is a pain to create - the etherparse API is lacking"
           ),
@@ -555,7 +553,10 @@ impl Connection {
         seq_num: LocalSeqNum,
         ack_num: RemoteSeqNum,
         mut res_buf: &mut [u8],
+        reason: &str,
     ) -> Result<Option<usize>> {
+        println!("Sending RST/ACK - Reason: {}", reason);
+
         let res = Connection::create_packet_builder_for(&conn_id)
             .tcp(conn_id.local_port(), conn_id.remote_port(), seq_num, 0)
             .ack(ack_num)
