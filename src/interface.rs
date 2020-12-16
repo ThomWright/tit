@@ -33,6 +33,7 @@ impl Interface {
         let mut snd_buf = [0u8; 1500];
         loop {
             let num_bytes = self.tun.recv(&mut rec_buf)?;
+            assert!(num_bytes <= 1500);
 
             let raw_packet = &rec_buf[..num_bytes];
 
