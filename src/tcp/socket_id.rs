@@ -24,6 +24,24 @@ pub enum ListeningSocketId {
 }
 
 impl ListeningSocketId {
+    /// Listens for connections from any remote socket
+    pub fn any_remote(local: SocketAddr) -> ListeningSocketId {
+        match local {
+            SocketAddr::V4(l) => ListeningSocketId::V4 {
+                remote_addr: Ipv4Addr::UNSPECIFIED,
+                remote_port: None,
+                local_addr: l.ip().clone(),
+                local_port: l.port(),
+            },
+            SocketAddr::V6(l) => ListeningSocketId::V6 {
+                remote_addr: Ipv6Addr::UNSPECIFIED,
+                remote_port: None,
+                local_addr: l.ip().clone(),
+                local_port: l.port(),
+            },
+        }
+    }
+
     pub fn local_socket(&self) -> SocketAddr {
         match self {
             ListeningSocketId::V4 {

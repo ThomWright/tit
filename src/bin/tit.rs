@@ -1,4 +1,6 @@
+use std::net::IpAddr;
 use std::net::Ipv4Addr;
+use std::net::SocketAddr;
 
 use tit::print_tcp_key;
 use tit::Interface;
@@ -16,12 +18,10 @@ fn main() -> Result<(), TitError> {
     println!();
 
     let mut tcp_impl = Tcp::new();
-    tcp_impl.listen(ListeningSocketId::V4 {
-        remote_addr: Ipv4Addr::UNSPECIFIED,
-        remote_port: None,
-        local_addr: IP,
-        local_port: PORT,
-    })?;
+    tcp_impl.listen(ListeningSocketId::any_remote(SocketAddr::new(
+        IpAddr::from(IP),
+        PORT,
+    )))?;
 
     let interface = Interface::new(tcp_impl)?;
     interface.listen()?;
