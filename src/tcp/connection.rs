@@ -401,9 +401,7 @@ impl Connection {
                     // used to update SND.WND.  The check here prevents using
                     // old segments to update the window.
 
-                    let fin_acked = self
-                        .snd_fin
-                        .map_or(false, |fin_seq| self.snd_una == fin_seq);
+                    let fin_acked = self.fin_acked();
 
                     if self.state == State::FinWait1 && fin_acked {
                         // if our FIN is now acknowledged then enter FIN-WAIT-2 and continue processing in that state
@@ -422,17 +420,29 @@ impl Connection {
         }
 
         if self.state == State::LastAck {
-            // TODO: wut
             // The only thing that can arrive in this state is an
             // acknowledgment of our FIN.  If our FIN is now
             // acknowledged, delete the TCB, enter the CLOSED state,
             // and return.
+            if self.acceptable_ack(hdr) {
+                self.snd_una = hdr.acknowledgment_number;
+
+                if self.fin_acked() {
+                    self.state = State::Closed;
+                    return Ok(None);
+                }
+            }
         }
         if self.state == State::TimeWait {
-            // TODO: wut
             // The only thing that can arrive in this state is a
             // retransmission of the remote FIN.  Acknowledge it, and
             // restart the 2 MSL timeout.
+            let fin_ack_retx = self.snd_una == hdr.acknowledgment_number;
+
+            if fin_ack_retx {
+                // TODO: restart MSL timeout
+                return self.send_ack(&mut res_buf);
+            }
         }
 
         // TODO: NEXT
@@ -441,6 +451,52 @@ impl Connection {
         // TODO: seventh, process the segment text
 
         // TODO: eighth, check the FIN bit
+        if hdr.fin {
+            // TODO:
+            // If the FIN bit is set, signal the user "connection closing"
+            // and return any pending RECEIVEs with same message/
+            // Note that FIN implies PUSH for any segment text not
+            // yet delivered to the user.
+
+            // Do not process the FIN if the state is CLOSED, LISTEN or
+            // SYN-SENT since the SEG.SEQ cannot be validated; drop the
+            // segment and return.
+            if self.state == State::SynSent {
+                return Ok(None);
+            }
+
+            // Advance RCV.NXT over the FIN.
+            self.rcv_nxt = self.rcv_nxt.wrapping_add(1);
+
+            match self.state {
+                State::SynReceived | State::Established => {
+                    self.state = State::CloseWait
+                }
+                State::FinWait1 => {
+                    // If our FIN has been ACKed (perhaps in this segment),
+                    // then enter TIME-WAIT, start the time-wait timer, turn
+                    // off the other timers; otherwise enter the CLOSING
+                    // state.
+                    if self.fin_acked() {
+                        self.state = State::TimeWait;
+                    // TODO: start the time-wait timer, turn off the other timers
+                    } else {
+                        self.state = State::Closing;
+                    }
+                }
+                State::FinWait2 => {
+                    self.state = State::TimeWait;
+                    // TODO: Start the time-wait timer, turn off the other timers.
+                }
+                State::TimeWait => {
+                    // TODO: Restart the 2 MSL time-wait timeout.
+                }
+                _ => {}
+            }
+
+            // Send an acknowledgment for the FIN.
+            return self.send_ack(&mut res_buf);
+        }
 
         Ok(None)
     }
@@ -618,6 +674,12 @@ impl Connection {
                 )
             }
         }
+    }
+
+    /// Has our FIN been ACKed?
+    fn fin_acked(&self) -> bool {
+        self.snd_fin
+            .map_or(false, |fin_seq| self.snd_una == fin_seq)
     }
 
     /// Should the connection state be deleted?
