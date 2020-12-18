@@ -443,8 +443,10 @@ impl Connection {
             }
         }
 
-        // TODO: sixth, check the URG bit
-        if let State::Established | State::FinWait1 | State::FinWait2 = self.state {
+        // sixth, check the URG bit
+        if let State::Established | State::FinWait1 | State::FinWait2 =
+            self.state
+        {
             if hdr.urg {
                 // If the URG bit is set, RCV.UP <- max(RCV.UP,SEG.UP).
                 let urgent_pointer =
@@ -458,7 +460,46 @@ impl Connection {
             }
         }
 
+        let mut should_send_ack = false;
+
         // TODO: seventh, process the segment text
+        if let State::Established | State::FinWait1 | State::FinWait2 =
+            self.state
+        {
+            // Once in the ESTABLISHED state, it is possible to deliver
+            // segment text to user RECEIVE buffers.  Text from segments
+            // can be moved into buffers until either the buffer is full
+            // or the segment is empty.  If the segment empties and
+            // carries a PUSH flag, then the user is informed, when the
+            // buffer is returned, that a PUSH has been received.
+
+            // When the TCP endpoint takes responsibility for delivering
+            // the data to the user it must also acknowledge the receipt
+            // of the data.
+
+            // Once the TCP endpoint takes responsibility for the data
+            // it advances RCV.NXT over the data accepted, and adjusts
+            // RCV.WND as appropriate to the current buffer
+            // availability.  The total of RCV.NXT and RCV.WND should
+            // not be reduced.
+
+            // A TCP implementation MAY send an ACK segment
+            // acknowledging RCV.NXT when a valid segment arrives that
+            // is in the window but not at the left window edge (MAY-
+            // 13).
+
+            // TODO: put data in receive buffer
+            // TODO: window management
+
+            if !payload.is_empty() {
+                self.rcv_nxt = self.rcv_nxt.wrapping_add(payload.len() as u32);
+
+                // TODO: This acknowledgment should be piggybacked on a segment
+                // being transmitted if possible without incurring undue
+                // delay.
+                should_send_ack = true;
+            }
+        }
 
         // TODO: eighth, check the FIN bit
         if hdr.fin {
@@ -508,7 +549,11 @@ impl Connection {
             return self.send_ack(&mut res_buf);
         }
 
-        Ok(None)
+        if should_send_ack {
+            self.send_ack(&mut res_buf)
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn send_syn_ack(
