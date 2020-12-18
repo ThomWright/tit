@@ -155,8 +155,6 @@ pub struct Connection {
     snd_fin: Option<LocalSeqNum>,
     /// Send window
     snd_wnd: WindowSize,
-    /// Send urgent pointer
-    snd_up: bool,
     /// Segment sequence number used for last window update
     snd_wl1: RemoteSeqNum,
     /// Segment acknowledgment number used for last window update
@@ -172,7 +170,7 @@ pub struct Connection {
     /// Receive window
     rcv_wnd: WindowSize,
     /// Receive urgent pointer
-    rcv_up: bool,
+    rcv_up: RemoteSeqNum,
     /// Initial receive sequence number
     irs: RemoteSeqNum,
 }
@@ -185,6 +183,7 @@ impl Connection {
     ) -> Connection {
         let iss = seq_gen.gen_iss();
         let snd_nxt = iss.wrapping_add(1);
+        let rcv_nxt = hdr.sequence_number.wrapping_add(1);
         Connection {
             id,
             state: State::SynReceived,
@@ -195,13 +194,12 @@ impl Connection {
             snd_max: snd_nxt,
             snd_fin: None,
             snd_wnd: 1024,
-            snd_up: false,
             snd_wl1: 0,
             snd_wl2: 0,
             iss,
-            rcv_nxt: hdr.sequence_number.wrapping_add(1),
+            rcv_nxt,
             rcv_wnd: hdr.window_size,
-            rcv_up: false,
+            rcv_up: rcv_nxt,
             irs: hdr.sequence_number,
         }
     }
@@ -445,8 +443,20 @@ impl Connection {
             }
         }
 
-        // TODO: NEXT
         // TODO: sixth, check the URG bit
+        if let State::Established | State::FinWait1 | State::FinWait2 = self.state {
+            if hdr.urg {
+                // If the URG bit is set, RCV.UP <- max(RCV.UP,SEG.UP).
+                let urgent_pointer =
+                    hdr.sequence_number + hdr.urgent_pointer as u32;
+                self.rcv_up = self.rcv_up.max(urgent_pointer);
+                // TODO: Signal the user that the remote side has urgent data if
+                // the urgent pointer (RCV.UP) is in advance of the data
+                // consumed.  If the user has already been signaled (or is
+                // still in the "urgent mode") for this continuous sequence
+                // of urgent data, do not signal the user again.
+            }
+        }
 
         // TODO: seventh, process the segment text
 
