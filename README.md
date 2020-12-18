@@ -34,3 +34,4 @@ Also inspired by wanting to print out TCP packets, to get a better feel for the 
 - [Transmission Control Protocol (TCP) Specification (draft-ietf-tcpm-rfc793bis-19)](https://datatracker.ietf.org/doc/draft-ietf-tcpm-rfc793bis/)
 - [TCP, UDP, and Sockets: rigorous and experimentally-validated behavioural specification Volume 1: Overview](https://www.cl.cam.ac.uk/techreports/UCAM-CL-TR-624.pdf)
 - [TCP, UDP, and Sockets: rigorous and experimentally-validated behavioural specification Volume 1: The Specification](https://www.cl.cam.ac.uk/techreports/UCAM-CL-TR-625.pdf)
+- [Example state variables](https://doc.omnetpp.org/inet/api-current/neddoc/src-inet-transportlayer-tcp-TcpStateVariables.html)
