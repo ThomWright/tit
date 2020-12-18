@@ -2,6 +2,28 @@
 
 Inspired by [Jon Gjengset's](https://www.youtube.com/playlist?list=PLqbS7AVVErFivDY3iKAQk3_VAm8SXwt1X) excellent YouTube stream. [Original code here](https://github.com/jonhoo/rust-tcp).
 
+Also inspired by wanting to print out TCP packets, to get a better feel for the protocol.
+
+## Progress
+
+- [x] Basic printing of packets
+- [x] Passive open
+- [x] Basic state handling for arriving segments
+- [ ] User APIs: `TcpListener`, `TcpStream`
+- [ ] Closing connections
+- [ ] Active open
+- [ ] Initial Sequence Number selection
+- [ ] Window management
+- [ ] Retransmission
+- [ ] CLI options (listen, connect, printing options etc.)
+- [ ] Send/receive data
+- [ ] Improved packet printing
+- [ ] TCP Options
+- [ ] Remote address validation
+- [ ] Reordering packets (handling out of order segments)
+- [ ] Proper IPv6 handling
+- [ ] [Check requirements](https://datatracker.ietf.org/doc/html/draft-ietf-tcpm-rfc793bis-19#appendix-B)
+
 ## Resources
 
 - [RFC 793 - TRANSMISSION CONTROL PROTOCOL](https://tools.ietf.org/html/rfc793)
