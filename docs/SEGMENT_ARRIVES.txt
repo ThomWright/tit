@@ -524,7 +524,6 @@ Otherwise,
           segment text to user RECEIVE buffers.  Text from segments
           can be moved into buffers until either the buffer is full
           or the segment is empty.  If the segment empties and
-
           carries a PUSH flag, then the user is informed, when the
           buffer is returned, that a PUSH has been received.
 

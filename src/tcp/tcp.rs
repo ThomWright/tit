@@ -2,47 +2,170 @@ use etherparse::{IpHeader, TcpHeader};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::{mpsc, Arc, Mutex};
 
 use super::connection::Connection;
 use super::connection::UserVisibleError;
 use super::connection_id::ConnectionId;
+// use super::interfaces::{SharedStreams, TcpListener};
 use super::types::*;
-use crate::errors::{Result, TitError};
+use crate::{
+    errors::{Result, TcpChannelError, TitError},
+    nic::{EthernetPacket, SendEthernetPacket},
+};
 
-pub struct Tcp {
-    /// On Linux it looks like if SO_REUSEPORT is set then we can get a stack of listening sockets on the same port.
-    /// Let's not bother with that for now.
-    listening_sockets: HashMap<PortNum, SocketAddr>,
-    connections: HashMap<ConnectionId, Connection>,
-    seq_gen: SeqGen,
+#[derive(Debug)]
+pub(crate) struct TcpPacket {
+    ip_hdr: IpHeader,
+    tcp_hdr: TcpHeader,
+    payload: Box<[u8]>,
 }
-
-impl Tcp {
-    pub fn new() -> Tcp {
-        Tcp {
-            listening_sockets: HashMap::default(),
-            connections: HashMap::default(),
-            seq_gen: SeqGen {},
+impl TcpPacket {
+    pub fn new(
+        ip_hdr: IpHeader,
+        tcp_hdr: TcpHeader,
+        payload: &[u8],
+    ) -> TcpPacket {
+        TcpPacket {
+            ip_hdr,
+            tcp_hdr,
+            payload: Box::from(payload),
         }
     }
+}
 
+pub struct IncomingPackets(pub(crate) mpsc::Sender<TcpPacket>);
+
+// pub(crate) enum TcpCommand {
+//     Listen {
+//         socket: SocketAddr,
+//         ack: mpsc::Sender<Result<TcpListener>>,
+//     },
+//     // Send,
+// }
+
+pub struct TcpControl {
+    /// On Linux it looks like if SO_REUSEPORT is set then we can get a stack of listening sockets on the same port.
+    /// Let's not bother with that for now.
+    listening_sockets: HashMap<
+        PortNum,
+        (
+            SocketAddr,
+            mpsc::Sender<(
+                SocketAddr,
+                (), // TODO: Arc<SharedStreams>
+            )>,
+        ),
+    >,
+}
+
+impl TcpControl {
+    // TODO: fn listen(&mut self, socket: SocketAddr) -> Result<TcpListener> {
     pub fn listen(&mut self, socket: SocketAddr) -> Result<()> {
         match self.listening_sockets.entry(socket.port()) {
             Entry::Occupied(_) => Err(TitError::EADDRINUSE),
             Entry::Vacant(entry) => {
-                entry.insert(socket);
+                let (snd, rcv) = mpsc::channel();
+                entry.insert((socket, snd));
+                // TODO: Ok(TcpListener::new(rcv))
                 Ok(())
             }
         }
     }
+}
 
-    pub fn receive(
+impl Default for TcpControl {
+    fn default() -> Self {
+        TcpControl {
+            listening_sockets: HashMap::default(),
+        }
+    }
+}
+
+pub struct Tcp {
+    control: Arc<Mutex<TcpControl>>,
+
+    connections: HashMap<ConnectionId, Connection>,
+    seq_gen: SeqGen,
+
+    incoming_segments: mpsc::Receiver<TcpPacket>,
+    // commands: mpsc::Receiver<TcpCommand>,
+}
+
+impl Tcp {
+    pub fn new() -> (Tcp, IncomingPackets) {
+        // let (cmd_snd, cmd_rcv) = mpsc::channel();
+        let (inc_segment_snd, inc_segment_rcv) = mpsc::channel();
+        (
+            Tcp {
+                control: Arc::default(),
+                connections: HashMap::default(),
+                seq_gen: SeqGen {},
+                incoming_segments: inc_segment_rcv,
+                // commands: cmd_rcv,
+            },
+            // cmd_snd,
+            IncomingPackets(inc_segment_snd),
+        )
+    }
+
+    pub fn start(
+        mut self,
+        send_packet: SendEthernetPacket,
+    ) -> Arc<Mutex<TcpControl>> {
+        // TODO: handle shutdown
+        let control = self.control.clone();
+        let _tcp_thread = std::thread::spawn(move || {
+            let mut run = || -> Result<()> {
+                let segment = self.incoming_segments.recv().map_err(|e| {
+                    TitError::IncomingTcpChannelClosed(TcpChannelError::Recv(e))
+                })?;
+
+                let mut res_buf: EthernetPacket = [0u8; 1500];
+
+                let len = self.receive(
+                    &segment.ip_hdr,
+                    &segment.tcp_hdr,
+                    &segment.payload,
+                    &mut res_buf,
+                )?;
+
+                if let Some(len) = len {
+                    send_packet
+                        .send((Box::new(res_buf), len))
+                        .map_err(|e| TitError::NetworkPacketSendFailure(e))?;
+                }
+
+                Ok(())
+            };
+
+            loop {
+                run().expect("error in TCP loop");
+            }
+        });
+        control
+    }
+
+    // fn on_tick(&mut self) {
+    //     // TODO: receive commands
+    //     // TODO: handle timers
+    //     while let Ok(cmd) = self.commands.try_recv() {
+    //         match cmd {
+    //             TcpCommand::Listen { socket, ack } => {
+    //                 let result = self.listen(socket);
+    //                 ack.send(result).expect("listen result channel not open");
+    //             }
+    //         }
+    //     }
+    // }
+
+    // TODO: rename to on_packet?
+    fn receive(
         &mut self,
         ip_hdr: &IpHeader,
         tcp_hdr: &TcpHeader,
         payload: &[u8],
-        // TODO: this API isn't going to work, we will probably want to put outgoing segments on a queue
-        // Also, from RFC1122:
+        // From RFC1122:
         // In general, the processing of received segments MUST be
         // implemented to aggregate ACK segments whenever possible.
         // For example, if the TCP is processing a series of queued
@@ -77,16 +200,19 @@ impl Tcp {
             }
             Entry::Vacant(conn_entry) => {
                 // Check we have a matching LISTEN-ing socket
-                let local = &conn_id.local_socket();
-                if self
+                let conn_local = &conn_id.local_socket();
+
+                // TODO: can we reduce lifetime of this lock?
+                let control =
+                    self.control.lock().expect("unable to get control lock");
+                if let Some((_, snd)) = control
                     .listening_sockets
-                    .get(&local.port())
-                    .filter(|listening| {
-                        println!("{} - {}", listening, local);
+                    .get(&conn_local.port())
+                    .filter(|(listening, _)| {
+                        println!("{} - {}", listening, conn_local);
                         listening.ip().is_unspecified()
-                            || listening.ip().eq(&local.ip())
+                            || listening.ip().eq(&conn_local.ip())
                     })
-                    .is_some()
                 {
                     // State: LISTEN
 
@@ -105,11 +231,14 @@ impl Tcp {
 
                     // third check for a SYN
                     } else if tcp_hdr.syn {
+                        // New connection
                         let conn = conn_entry.insert(Connection::passive_open(
                             conn_id,
                             &tcp_hdr,
                             &self.seq_gen,
                         ));
+                        // snd.send((conn_id.remote_socket(), conn.streams()))
+                        //     .expect("TcpListener closed?");
                         conn.send_syn_ack(&mut res_buf)
 
                     // fourth other text or control
@@ -210,7 +339,7 @@ mod tests {
     #[test]
     fn closed_socket_syn() {
         // No listening sockets
-        let mut tcp = Tcp::new();
+        let (mut tcp, _) = Tcp::new();
 
         let client_iss = 10;
         let mut res_buf = [0u8; 1500];
@@ -401,12 +530,17 @@ mod tests {
     }
 
     fn new_listening_tcp() -> Tcp {
-        let mut tcp = Tcp::new();
-        tcp.listen(SocketAddr::new(
-            IpAddr::from(Ipv4Addr::UNSPECIFIED),
-            SERVER_PORT,
-        ))
-        .unwrap();
+        let (tcp, _) = Tcp::new();
+        {
+            let mut control =
+                tcp.control.lock().expect("unable to get control lock");
+            control
+                .listen(SocketAddr::new(
+                    IpAddr::from(Ipv4Addr::UNSPECIFIED),
+                    SERVER_PORT,
+                ))
+                .unwrap();
+        }
         tcp
     }
 

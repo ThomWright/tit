@@ -3,8 +3,9 @@ use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 
 use tit::print_tcp_key;
-use tit::Interface;
+use tit::start_nic;
 use tit::Tcp;
+// use tit::TcpListener;
 use tit::TitError;
 
 const IP: Ipv4Addr = Ipv4Addr::UNSPECIFIED;
@@ -17,11 +18,31 @@ fn main() -> Result<(), TitError> {
     print_tcp_key();
     println!();
 
-    let mut tcp_impl = Tcp::new();
-    tcp_impl.listen(SocketAddr::new(IpAddr::from(IP), PORT))?;
+    let (tcp_impl, incoming_tcp_packets) = Tcp::new();
 
-    let interface = Interface::new(tcp_impl)?;
-    interface.listen()?;
+    let outgoing_network_packets = start_nic(incoming_tcp_packets)?;
+
+    let control = tcp_impl.start(outgoing_network_packets);
+    {
+        let listening_socket = SocketAddr::new(IpAddr::from(IP), PORT);
+        control
+            .lock()
+            .expect("unable to get control lock")
+            .listen(listening_socket)?;
+    }
+
+    // {
+    //     let tcp_listener = TcpListener::bind(listening_socket, &tcp_cmds)?;
+    //     let (mut stream, remote_socket) = tcp_listener.accept()?;
+    //     println!("{}", remote_socket);
+
+    //     let mut read_buf = [0; 512];
+    //     let len = stream.read(&mut read_buf)?;
+
+    //     println!("Data: {:#?}", &read_buf[..len]);
+    // }
+
+    std::thread::sleep(std::time::Duration::from_secs(1000));
 
     Ok(())
 }

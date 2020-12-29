@@ -173,6 +173,7 @@ pub struct Connection {
     rcv_up: RemoteSeqNum,
     /// Initial receive sequence number
     irs: RemoteSeqNum,
+    // streams: Arc<SharedStreams>,
 }
 
 impl Connection {
@@ -201,8 +202,13 @@ impl Connection {
             rcv_wnd: hdr.window_size,
             rcv_up: rcv_nxt,
             irs: hdr.sequence_number,
+            // streams: Arc::new(SharedStreams::default()),
         }
     }
+
+    // pub fn streams(&self) -> Arc<SharedStreams> {
+    //     self.streams.clone()
+    // }
 
     pub fn receive(
         &mut self,
@@ -501,7 +507,7 @@ impl Connection {
             }
         }
 
-        // TODO: eighth, check the FIN bit
+        // eighth, check the FIN bit
         if hdr.fin {
             // TODO:
             // If the FIN bit is set, signal the user "connection closing"

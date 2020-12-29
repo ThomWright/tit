@@ -87,6 +87,20 @@ impl ConnectionId {
         }
     }
 
+    pub fn remote_socket(&self) -> SocketAddr {
+        match self {
+            ConnectionId::V4 { remote_socket, .. } => {
+                SocketAddr::V4(*remote_socket)
+            }
+
+            ConnectionId::V6 {
+                remote_socket: _, ..
+            } => {
+                unimplemented!("IPv6")
+            }
+        }
+    }
+
     pub fn local_port(&self) -> PortNum {
         match self {
             ConnectionId::V4 { local_socket, .. } => local_socket.port(),
