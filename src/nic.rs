@@ -1,6 +1,7 @@
+use crossbeam_channel;
 use etherparse;
 use etherparse::TransportHeader;
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 use tun_tap;
 
 use crate::errors::TitError;
@@ -13,7 +14,7 @@ use crate::tcp::TcpPacket;
 /// Ethernet MTU = 1500
 pub type EthernetPacket = [u8; 1500];
 pub type NetworkChannelContents = (Box<EthernetPacket>, usize);
-pub type SendEthernetPacket = mpsc::Sender<NetworkChannelContents>;
+pub type SendEthernetPacket = crossbeam_channel::Sender<NetworkChannelContents>;
 
 pub fn start_nic(tcp: tcp::IncomingPackets) -> Result<SendEthernetPacket> {
     // We don't care about the 4 byte header
@@ -23,7 +24,7 @@ pub fn start_nic(tcp: tcp::IncomingPackets) -> Result<SendEthernetPacket> {
     )?);
 
     let (incoming_packets, outgoing_packets) =
-        mpsc::channel::<(Box<EthernetPacket>, usize)>();
+        crossbeam_channel::unbounded::<(Box<EthernetPacket>, usize)>();
 
     let write_tun = tun.clone();
     let _write = std::thread::spawn(move || {

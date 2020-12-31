@@ -1,8 +1,9 @@
+use crossbeam_channel;
 use etherparse::{IpHeader, TcpHeader};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 
 use super::connection::Connection;
 use super::connection::UserVisibleError;
@@ -34,7 +35,7 @@ impl TcpPacket {
     }
 }
 
-pub struct IncomingPackets(pub(crate) mpsc::Sender<TcpPacket>);
+pub struct IncomingPackets(pub(crate) crossbeam_channel::Sender<TcpPacket>);
 
 // pub(crate) enum TcpCommand {
 //     Listen {
@@ -51,7 +52,7 @@ pub struct TcpControl {
         PortNum,
         (
             SocketAddr,
-            mpsc::Sender<(
+            crossbeam_channel::Sender<(
                 SocketAddr,
                 (), // TODO: Arc<SharedStreams>
             )>,
@@ -65,7 +66,7 @@ impl TcpControl {
         match self.listening_sockets.entry(socket.port()) {
             Entry::Occupied(_) => Err(TitError::EADDRINUSE),
             Entry::Vacant(entry) => {
-                let (snd, rcv) = mpsc::channel();
+                let (snd, rcv) = crossbeam_channel::unbounded();
                 entry.insert((socket, snd));
                 // TODO: Ok(TcpListener::new(rcv))
                 Ok(())
@@ -88,14 +89,14 @@ pub struct Tcp {
     connections: HashMap<ConnectionId, Connection>,
     seq_gen: SeqGen,
 
-    incoming_segments: mpsc::Receiver<TcpPacket>,
+    incoming_segments: crossbeam_channel::Receiver<TcpPacket>,
     // commands: mpsc::Receiver<TcpCommand>,
 }
 
 impl Tcp {
     pub fn new() -> (Tcp, IncomingPackets) {
         // let (cmd_snd, cmd_rcv) = mpsc::channel();
-        let (inc_segment_snd, inc_segment_rcv) = mpsc::channel();
+        let (inc_segment_snd, inc_segment_rcv) = crossbeam_channel::unbounded();
         (
             Tcp {
                 control: Arc::default(),

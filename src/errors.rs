@@ -1,5 +1,6 @@
+use crossbeam_channel;
+
 use crate::{nic::NetworkChannelContents, tcp};
-use std::sync::mpsc;
 
 #[derive(Debug)]
 pub enum TitError {
@@ -8,20 +9,20 @@ pub enum TitError {
     ChecksumDifference,
     ChecksumCalcFailure(etherparse::ValueError),
 
-    NetworkPacketSendFailure(mpsc::SendError<NetworkChannelContents>),
+    NetworkPacketSendFailure(crossbeam_channel::SendError<NetworkChannelContents>),
 
     IncomingTcpChannelClosed(TcpChannelError),
-    OutgoingNetworkChannelClosed(mpsc::RecvError),
+    OutgoingNetworkChannelClosed(crossbeam_channel::RecvError),
 
-    ChanRcv(mpsc::RecvError),
+    ChanRcv(crossbeam_channel::RecvError),
 
     EADDRINUSE,
 }
 
 #[derive(Debug)]
-pub struct TcpSendError(mpsc::SendError<tcp::TcpPacket>);
-impl From<mpsc::SendError<tcp::TcpPacket>> for TcpSendError {
-    fn from(e: mpsc::SendError<tcp::TcpPacket>) -> Self {
+pub struct TcpSendError(crossbeam_channel::SendError<tcp::TcpPacket>);
+impl From<crossbeam_channel::SendError<tcp::TcpPacket>> for TcpSendError {
+    fn from(e: crossbeam_channel::SendError<tcp::TcpPacket>) -> Self {
         TcpSendError(e)
     }
 }
@@ -29,7 +30,7 @@ impl From<mpsc::SendError<tcp::TcpPacket>> for TcpSendError {
 #[derive(Debug)]
 pub enum TcpChannelError {
     Send(TcpSendError),
-    Recv(mpsc::RecvError),
+    Recv(crossbeam_channel::RecvError),
 }
 
 impl From<std::io::Error> for TitError {
