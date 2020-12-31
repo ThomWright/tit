@@ -1,6 +1,7 @@
 use crossbeam_channel;
 
 use crate::{nic::NetworkChannelContents, tcp};
+use tcp::TcpCommand;
 
 #[derive(Debug)]
 pub enum TitError {
@@ -9,12 +10,15 @@ pub enum TitError {
     ChecksumDifference,
     ChecksumCalcFailure(etherparse::ValueError),
 
-    NetworkPacketSendFailure(crossbeam_channel::SendError<NetworkChannelContents>),
+    NetworkPacketSendFailure(
+        crossbeam_channel::SendError<NetworkChannelContents>,
+    ),
 
     IncomingTcpChannelClosed(TcpChannelError),
     OutgoingNetworkChannelClosed(crossbeam_channel::RecvError),
 
-    ChanRcv(crossbeam_channel::RecvError),
+    TcpCommandSendFailure(crossbeam_channel::SendError<TcpCommand>),
+    TcpCommandReceiveFailure(crossbeam_channel::RecvError),
 
     EADDRINUSE,
 }

@@ -3,12 +3,11 @@ use etherparse::{IpHeader, TcpHeader};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
 
 use super::connection::Connection;
 use super::connection::UserVisibleError;
 use super::connection_id::ConnectionId;
-// use super::interfaces::{SharedStreams, TcpListener};
+use super::interfaces::{NewConnection, TcpListener};
 use super::types::*;
 use crate::{
     errors::{Result, TcpChannelError, TitError},
@@ -37,75 +36,40 @@ impl TcpPacket {
 
 pub struct IncomingPackets(pub(crate) crossbeam_channel::Sender<TcpPacket>);
 
-// pub(crate) enum TcpCommand {
-//     Listen {
-//         socket: SocketAddr,
-//         ack: mpsc::Sender<Result<TcpListener>>,
-//     },
-//     // Send,
-// }
+pub enum TcpCommand {
+    Listen {
+        socket: SocketAddr,
+        ack: crossbeam_channel::Sender<Result<TcpListener>>,
+    },
+    // Open
+    // Send,
+    // Close,
+}
 
-pub struct TcpControl {
+pub struct Tcp {
     /// On Linux it looks like if SO_REUSEPORT is set then we can get a stack of listening sockets on the same port.
     /// Let's not bother with that for now.
     listening_sockets: HashMap<
         PortNum,
-        (
-            SocketAddr,
-            crossbeam_channel::Sender<(
-                SocketAddr,
-                (), // TODO: Arc<SharedStreams>
-            )>,
-        ),
+        (SocketAddr, crossbeam_channel::Sender<NewConnection>),
     >,
-}
-
-impl TcpControl {
-    // TODO: fn listen(&mut self, socket: SocketAddr) -> Result<TcpListener> {
-    pub fn listen(&mut self, socket: SocketAddr) -> Result<()> {
-        match self.listening_sockets.entry(socket.port()) {
-            Entry::Occupied(_) => Err(TitError::EADDRINUSE),
-            Entry::Vacant(entry) => {
-                let (snd, rcv) = crossbeam_channel::unbounded();
-                entry.insert((socket, snd));
-                // TODO: Ok(TcpListener::new(rcv))
-                Ok(())
-            }
-        }
-    }
-}
-
-impl Default for TcpControl {
-    fn default() -> Self {
-        TcpControl {
-            listening_sockets: HashMap::default(),
-        }
-    }
-}
-
-pub struct Tcp {
-    control: Arc<Mutex<TcpControl>>,
 
     connections: HashMap<ConnectionId, Connection>,
     seq_gen: SeqGen,
 
     incoming_segments: crossbeam_channel::Receiver<TcpPacket>,
-    // commands: mpsc::Receiver<TcpCommand>,
 }
 
 impl Tcp {
     pub fn new() -> (Tcp, IncomingPackets) {
-        // let (cmd_snd, cmd_rcv) = mpsc::channel();
         let (inc_segment_snd, inc_segment_rcv) = crossbeam_channel::unbounded();
         (
             Tcp {
-                control: Arc::default(),
+                listening_sockets: HashMap::default(),
                 connections: HashMap::default(),
                 seq_gen: SeqGen {},
                 incoming_segments: inc_segment_rcv,
-                // commands: cmd_rcv,
             },
-            // cmd_snd,
             IncomingPackets(inc_segment_snd),
         )
     }
@@ -113,52 +77,76 @@ impl Tcp {
     pub fn start(
         mut self,
         send_packet: SendEthernetPacket,
-    ) -> Arc<Mutex<TcpControl>> {
+    ) -> crossbeam_channel::Sender<TcpCommand> {
         // TODO: handle shutdown
-        let control = self.control.clone();
+
+        let (snd_cmd, rcv_cmd) = crossbeam_channel::unbounded();
+
         let _tcp_thread = std::thread::spawn(move || {
             let mut run = || -> Result<()> {
-                let segment = self.incoming_segments.recv().map_err(|e| {
-                    TitError::IncomingTcpChannelClosed(TcpChannelError::Recv(e))
-                })?;
-
-                let mut res_buf: EthernetPacket = [0u8; 1500];
-
-                let len = self.receive(
-                    &segment.ip_hdr,
-                    &segment.tcp_hdr,
-                    &segment.payload,
-                    &mut res_buf,
-                )?;
-
-                if let Some(len) = len {
-                    send_packet
-                        .send((Box::new(res_buf), len))
-                        .map_err(|e| TitError::NetworkPacketSendFailure(e))?;
+                crossbeam_channel::select! {
+                    recv(self.incoming_segments) -> segment => {
+                        let segment = segment.map_err(|e| TitError::IncomingTcpChannelClosed(TcpChannelError::Recv(e)))?;
+                        self.receive_segment(&segment, &send_packet)
+                    },
+                    recv(rcv_cmd) -> cmd => {
+                        let cmd = cmd.map_err(|e| TitError::TcpCommandReceiveFailure(e))?;
+                        self.receive_command(&cmd);
+                        Ok(())
+                    },
                 }
-
-                Ok(())
             };
 
             loop {
                 run().expect("error in TCP loop");
             }
         });
-        control
+
+        snd_cmd
     }
 
-    // fn on_tick(&mut self) {
-    //     // TODO: receive commands
-    //     // TODO: handle timers
-    //     while let Ok(cmd) = self.commands.try_recv() {
-    //         match cmd {
-    //             TcpCommand::Listen { socket, ack } => {
-    //                 let result = self.listen(socket);
-    //                 ack.send(result).expect("listen result channel not open");
-    //             }
-    //         }
-    //     }
-    // }
+    fn receive_command(&mut self, cmd: &TcpCommand) {
+        match cmd {
+            TcpCommand::Listen { socket, ack } => {
+                let result = self.listen(*socket);
+                ack.send(result).expect("listen result channel not open");
+            }
+        }
+    }
+
+    fn listen(&mut self, socket: SocketAddr) -> Result<TcpListener> {
+        match self.listening_sockets.entry(socket.port()) {
+            Entry::Occupied(_) => Err(TitError::EADDRINUSE),
+            Entry::Vacant(entry) => {
+                let (snd, rcv) = crossbeam_channel::unbounded();
+                entry.insert((socket, snd));
+                Ok(TcpListener::new(rcv))
+            }
+        }
+    }
+
+    fn receive_segment(
+        &mut self,
+        segment: &TcpPacket,
+        send_packet: &SendEthernetPacket,
+    ) -> Result<()> {
+        let mut res_buf: EthernetPacket = [0u8; 1500];
+
+        let len = self.receive(
+            &segment.ip_hdr,
+            &segment.tcp_hdr,
+            &segment.payload,
+            &mut res_buf,
+        )?;
+
+        if let Some(len) = len {
+            send_packet
+                .send((Box::new(res_buf), len))
+                .map_err(|e| TitError::NetworkPacketSendFailure(e))?;
+        }
+
+        Ok(())
+    }
 
     // TODO: rename to on_packet?
     fn receive(
@@ -203,10 +191,7 @@ impl Tcp {
                 // Check we have a matching LISTEN-ing socket
                 let conn_local = &conn_id.local_socket();
 
-                // TODO: can we reduce lifetime of this lock?
-                let control =
-                    self.control.lock().expect("unable to get control lock");
-                if let Some((_, snd)) = control
+                if let Some((_, snd)) = self
                     .listening_sockets
                     .get(&conn_local.port())
                     .filter(|(listening, _)| {
@@ -233,13 +218,18 @@ impl Tcp {
                     // third check for a SYN
                     } else if tcp_hdr.syn {
                         // New connection
+                        let (inc_snd, inc_rcv) = crossbeam_channel::unbounded();
+
                         let conn = conn_entry.insert(Connection::passive_open(
                             conn_id,
                             &tcp_hdr,
                             &self.seq_gen,
+                            inc_snd,
                         ));
-                        // snd.send((conn_id.remote_socket(), conn.streams()))
-                        //     .expect("TcpListener closed?");
+
+                        snd.send((conn_id.remote_socket(), inc_rcv))
+                            .expect("TcpListener closed?");
+
                         conn.send_syn_ack(&mut res_buf)
 
                     // fourth other text or control
@@ -367,7 +357,7 @@ mod tests {
 
     #[test]
     fn passive_open_original_syn() {
-        let mut tcp = new_listening_tcp();
+        let (mut tcp, _listener) = new_listening_tcp();
 
         let client_iss = 0;
 
@@ -418,7 +408,7 @@ mod tests {
 
     #[test]
     fn passive_open_three_way() {
-        let mut tcp = new_listening_tcp();
+        let (mut tcp, _listener) = new_listening_tcp();
 
         let client_iss = 0;
 
@@ -530,19 +520,17 @@ mod tests {
         (ip_hdr, tcp_hdr)
     }
 
-    fn new_listening_tcp() -> Tcp {
-        let (tcp, _) = Tcp::new();
-        {
-            let mut control =
-                tcp.control.lock().expect("unable to get control lock");
-            control
-                .listen(SocketAddr::new(
-                    IpAddr::from(Ipv4Addr::UNSPECIFIED),
-                    SERVER_PORT,
-                ))
-                .unwrap();
-        }
-        tcp
+    fn new_listening_tcp() -> (Tcp, TcpListener) {
+        let (mut tcp, _) = Tcp::new();
+
+        let listener = tcp
+            .listen(SocketAddr::new(
+                IpAddr::from(Ipv4Addr::UNSPECIFIED),
+                SERVER_PORT,
+            ))
+            .unwrap();
+
+        (tcp, listener)
     }
 
     fn extract_headers(buf: &[u8]) -> (IpHeader, TcpHeader, usize) {
