@@ -4,11 +4,11 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
-use super::connection::Connection;
 use super::connection::UserVisibleError;
 use super::connection_id::ConnectionId;
-use super::interfaces::{NewConnection, TcpListener};
+use super::interfaces::NewConnection;
 use super::types::*;
+use super::{connection::Connection, TcpError, TcpResult};
 use crate::{
     errors::{Result, TcpChannelError, TitError},
     nic::{EthernetPacket, SendEthernetPacket},
@@ -37,13 +37,24 @@ impl TcpPacket {
 pub struct IncomingPackets(pub(crate) crossbeam_channel::Sender<TcpPacket>);
 
 pub enum TcpCommand {
+    /// OPEN - open a passive socket
     Listen {
         socket: SocketAddr,
-        ack: crossbeam_channel::Sender<Result<TcpListener>>,
+        ack: crossbeam_channel::Sender<TcpResult<()>>,
+        snd_conn: crossbeam_channel::Sender<NewConnection>,
     },
-    // Open
+    // Open (active)
     // Send,
+    Receive {
+        conn_id: ConnectionId,
+        snd_data: crossbeam_channel::Sender<TcpResult<Vec<u8>>>,
+        buf_len: usize,
+    },
     // Close,
+
+    // ?
+    // Abort
+    // Status
 }
 
 pub struct Tcp {
@@ -106,21 +117,52 @@ impl Tcp {
     }
 
     fn receive_command(&mut self, cmd: &TcpCommand) {
+        use TcpCommand::*;
         match cmd {
-            TcpCommand::Listen { socket, ack } => {
-                let result = self.listen(*socket);
+            Listen {
+                socket,
+                ack,
+                snd_conn,
+            } => {
+                let result = self.listen(*socket, snd_conn.clone());
                 ack.send(result).expect("listen result channel not open");
+            }
+            Receive {
+                conn_id,
+                snd_data,
+                buf_len,
+            } => {
+                let conn = self.connections.get_mut(conn_id);
+                match conn {
+                    None => {
+                        snd_data
+                            .send(Err(TcpError::NoConnection.into()))
+                            .map_err(|e| {
+                                TitError::SendIncomingDataChannelClosed(
+                                    *conn_id, e,
+                                )
+                            })
+                            .expect("data channel should be open");
+                    }
+                    Some(conn) => {
+                        conn.handle_receive(snd_data.clone(), *buf_len)
+                            .expect("data channel should be open");
+                    }
+                };
             }
         }
     }
 
-    fn listen(&mut self, socket: SocketAddr) -> Result<TcpListener> {
+    fn listen(
+        &mut self,
+        socket: SocketAddr,
+        snd_conn: crossbeam_channel::Sender<NewConnection>,
+    ) -> TcpResult<()> {
         match self.listening_sockets.entry(socket.port()) {
-            Entry::Occupied(_) => Err(TitError::EADDRINUSE),
+            Entry::Occupied(_) => Err(TcpError::EADDRINUSE),
             Entry::Vacant(entry) => {
-                let (snd, rcv) = crossbeam_channel::unbounded();
-                entry.insert((socket, snd));
-                Ok(TcpListener::new(rcv))
+                entry.insert((socket, snd_conn));
+                Ok(())
             }
         }
     }
@@ -169,15 +211,15 @@ impl Tcp {
         match self.connections.entry(conn_id) {
             Entry::Occupied(mut entry) => {
                 let conn = entry.get_mut();
-                let res = conn.receive(&tcp_hdr, &payload, &mut res_buf);
+                let res = conn.handle_segment(&tcp_hdr, &payload, &mut res_buf);
                 if let Some(error) = conn.user_error() {
                     // TODO: inform the user of any errors
                     match error {
                         UserVisibleError::ConnectionRefused => {
-                            println!("connection refused")
+                            eprintln!("connection refused")
                         }
                         UserVisibleError::ConnectionReset => {
-                            println!("connection reset")
+                            eprintln!("connection reset")
                         }
                     }
                 }
@@ -191,11 +233,10 @@ impl Tcp {
                 // Check we have a matching LISTEN-ing socket
                 let conn_local = &conn_id.local_socket();
 
-                if let Some((_, snd)) = self
+                if let Some((_, listener)) = self
                     .listening_sockets
                     .get(&conn_local.port())
                     .filter(|(listening, _)| {
-                        println!("{} - {}", listening, conn_local);
                         listening.ip().is_unspecified()
                             || listening.ip().eq(&conn_local.ip())
                     })
@@ -218,17 +259,14 @@ impl Tcp {
                     // third check for a SYN
                     } else if tcp_hdr.syn {
                         // New connection
-                        let (inc_snd, inc_rcv) = crossbeam_channel::unbounded();
 
                         let conn = conn_entry.insert(Connection::passive_open(
                             conn_id,
                             &tcp_hdr,
                             &self.seq_gen,
-                            inc_snd,
                         ));
 
-                        snd.send((conn_id.remote_socket(), inc_rcv))
-                            .expect("TcpListener closed?");
+                        listener.send(conn_id).expect("TcpListener closed?");
 
                         conn.send_syn_ack(&mut res_buf)
 
@@ -520,17 +558,19 @@ mod tests {
         (ip_hdr, tcp_hdr)
     }
 
-    fn new_listening_tcp() -> (Tcp, TcpListener) {
+    fn new_listening_tcp() -> (Tcp, crossbeam_channel::Receiver<NewConnection>)
+    {
         let (mut tcp, _) = Tcp::new();
 
-        let listener = tcp
-            .listen(SocketAddr::new(
-                IpAddr::from(Ipv4Addr::UNSPECIFIED),
-                SERVER_PORT,
-            ))
-            .unwrap();
+        let (snd, rcv) = crossbeam_channel::unbounded();
 
-        (tcp, listener)
+        tcp.listen(
+            SocketAddr::new(IpAddr::from(Ipv4Addr::UNSPECIFIED), SERVER_PORT),
+            snd,
+        )
+        .unwrap();
+
+        (tcp, rcv)
     }
 
     fn extract_headers(buf: &[u8]) -> (IpHeader, TcpHeader, usize) {

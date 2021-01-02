@@ -1,14 +1,18 @@
+use arraydeque::ArrayDeque;
+use crossbeam_channel::Sender;
 use etherparse::{
     IpHeader, IpTrafficClass, Ipv4Header, PacketBuilder, PacketBuilderStep,
     TcpHeader,
 };
 use std::fmt;
-use std::sync::Arc;
 
-use super::connection_id::ConnectionId;
 use super::tcp::SeqGen;
 use super::types::*;
-use crate::errors::Result;
+use super::{connection_id::ConnectionId, TcpError};
+use super::{errors::TcpResult, ReceiveResult};
+use crate::{errors::Result, TitError};
+
+const DATA_BUFFER_SIZE: usize = 2 << 15;
 
 #[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq)]
@@ -175,9 +179,16 @@ pub struct Connection {
     /// Initial receive sequence number
     irs: RemoteSeqNum,
 
-    // Channels to send/receive data from users
-    incoming_data: crossbeam_channel::Sender<Vec<u8>>,
-    // TODO: outgoing_data:
+    // Buffers for data
+
+    // TODO: consider using ringbuf? https://crates.io/crates/ringbuf
+    inc_buf: ArrayDeque<[u8; DATA_BUFFER_SIZE]>,
+    /// A queue of [`Sender`]s over which to send data to the user, along with
+    /// the number of bytes which can be sent.
+    ///
+    /// Each item in the queue represents a RECEIVE command.
+    recv_req_q: Vec<(Sender<ReceiveResult>, usize)>,
+    // TODO: out_buf: ...,
 }
 
 impl Connection {
@@ -185,7 +196,6 @@ impl Connection {
         id: ConnectionId,
         hdr: &TcpHeader,
         seq_gen: &SeqGen,
-        incoming_data: crossbeam_channel::Sender<Vec<u8>>,
     ) -> Connection {
         let iss = seq_gen.gen_iss();
         let snd_nxt = iss.wrapping_add(1);
@@ -196,7 +206,7 @@ impl Connection {
             open_type: OpenType::Passive,
             error: None,
             snd_una: iss,
-            snd_nxt: snd_nxt,
+            snd_nxt,
             snd_max: snd_nxt,
             snd_fin: None,
             snd_wnd: 1024,
@@ -208,11 +218,97 @@ impl Connection {
             rcv_up: rcv_nxt,
             irs: hdr.sequence_number,
 
-            incoming_data,
+            inc_buf: ArrayDeque::new(),
+            recv_req_q: vec![],
         }
     }
 
-    pub fn receive(
+    pub fn handle_receive(
+        &mut self,
+        snd_data: Sender<TcpResult<Vec<u8>>>,
+        buf_len: usize,
+    ) -> Result<()> {
+        use State::*;
+        let result = match self.state {
+            Closed => {
+                // If the user does not have access to such a connection, return
+                // "error: connection illegal for this process".
+                // Otherwise return "error: connection does not exist".
+                Err(TcpError::NoConnection)
+            }
+            Listen | SynSent | SynReceived => {
+                // Queue for processing after entering ESTABLISHED state.  If
+                // there is no room to queue this request, respond with "error:
+                // insufficient resources".
+                self.recv_req_q.push((snd_data.clone(), buf_len));
+
+                Ok(())
+            }
+
+            Established | FinWait1 | FinWait2 => {
+                // TODO:
+                // If insufficient incoming segments are queued to satisfy the
+                // request, queue the request.  If there is no queue space to
+                // remember the RECEIVE, respond with "error: insufficient
+                // resources".
+                //
+                // Reassemble queued incoming segments into receive buffer and
+                // return to user.  Mark "push seen" (PUSH) if this is the case.
+                //
+                // If RCV.UP is in advance of the data currently being passed to
+                // the user notify the user of the presence of urgent data.
+                //
+                // When the TCP endpoint takes responsibility for delivering data
+                // to the user that fact must be communicated to the sender via an
+                // acknowledgment.  The formation of such an acknowledgment is
+                // described below in the discussion of processing an incoming
+                // segment.
+                self.recv_req_q.push((snd_data.clone(), buf_len));
+
+                self.handle_pending_receives()?;
+
+                Ok(())
+            }
+
+            CloseWait => {
+                // TODO:
+                // Since the remote side has already sent FIN, RECEIVEs must be
+                // satisfied by text already on hand, but not yet delivered to the
+                // user.  If no text is awaiting delivery, the RECEIVE will get a
+                // "error: connection closing" response.  Otherwise, any remaining
+                // text can be used to satisfy the RECEIVE.
+                Ok(())
+            }
+
+            Closing | LastAck | TimeWait => {
+                // Return "error: connection closing".
+                Err(TcpError::ConnectionClosing)
+            }
+        };
+
+        if let Err(e) = result {
+            snd_data.send(Err(e)).map_err(|e| {
+                TitError::SendIncomingDataChannelClosed(self.id, e)
+            })?;
+        }
+
+        Ok(())
+    }
+
+    fn handle_pending_receives(&mut self) -> Result<()> {
+        while !self.inc_buf.is_empty() && !self.recv_req_q.is_empty() {
+            if let Some((snd_data, buf_len)) = self.recv_req_q.pop() {
+                let len = buf_len.min(self.inc_buf.len());
+                let data = self.inc_buf.drain(..len).collect();
+                snd_data.send(Ok(data)).map_err(|e| {
+                    TitError::SendIncomingDataChannelClosed(self.id, e)
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn handle_segment(
         &mut self,
         hdr: &TcpHeader,
         payload: &[u8],
@@ -286,6 +382,7 @@ impl Connection {
                     | State::FinWait1
                     | State::FinWait2
                     | State::CloseWait => {
+                        // TODO:
                         // If the RST bit is set then, any outstanding RECEIVEs and
                         // SEND should receive "reset" responses.  All segment
                         // queues should be flushed.  Users should also receive an
@@ -469,6 +566,7 @@ impl Connection {
         }
 
         let mut should_send_ack = false;
+        let mut should_handle_receives = false;
 
         // TODO: seventh, process the segment text
         if let State::Established | State::FinWait1 | State::FinWait2 =
@@ -501,6 +599,8 @@ impl Connection {
 
             if !payload.is_empty() {
                 self.rcv_nxt = self.rcv_nxt.wrapping_add(payload.len() as u32);
+                self.inc_buf.extend_back(payload.to_owned());
+                should_handle_receives = true;
 
                 // TODO: This acknowledgment should be piggybacked on a segment
                 // being transmitted if possible without incurring undue
@@ -555,6 +655,11 @@ impl Connection {
 
             // Send an acknowledgment for the FIN.
             return self.send_ack(&mut res_buf);
+        }
+
+        // TODO: need to work out when best to handling pending receives...
+        if should_handle_receives {
+            self.handle_pending_receives()?;
         }
 
         if should_send_ack {
@@ -654,7 +759,7 @@ impl Connection {
         mut res_buf: &mut [u8],
         reason: &str,
     ) -> Result<Option<usize>> {
-        println!("Sending RST - Reason: {}", reason);
+        eprintln!("Sending RST - Reason: {}", reason);
 
         let res = Connection::create_packet_builder_for(&conn_id)
             .tcp(conn_id.local_port(), conn_id.remote_port(), seq_num, 0)
@@ -674,7 +779,7 @@ impl Connection {
         mut res_buf: &mut [u8],
         reason: &str,
     ) -> Result<Option<usize>> {
-        println!("Sending RST/ACK - Reason: {}", reason);
+        eprintln!("Sending RST/ACK - Reason: {}", reason);
 
         let res = Connection::create_packet_builder_for(&conn_id)
             .tcp(conn_id.local_port(), conn_id.remote_port(), seq_num, 0)

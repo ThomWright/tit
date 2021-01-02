@@ -1,6 +1,8 @@
 use ansi_term::Colour;
 use etherparse;
 use etherparse::{TcpHeader, TransportHeader};
+use std::io;
+use std::io::Write;
 
 use crate::ip_utils;
 use crate::ip_utils::IpPair;
@@ -52,7 +54,7 @@ pub fn tcp_key() {
         URGENT.paint("Urgent pointer"),
         OPTIONS.paint("Options"),
     ] {
-        println!("{}", s);
+        eprintln!("{}", s);
     }
 }
 
@@ -81,14 +83,20 @@ pub fn tcp_key() {
 const RESERVED_VAL: u8 = 0;
 
 pub fn tcp_header(header: &TcpHeader) {
+    let stderr = io::stderr();
+    let mut stderr = stderr.lock();
+
     tcp_header_hex_line(&header);
     tcp_header_binary(&header);
     tcp_header_flags(&header);
     // TODO: print options
-    // println!("{:#?}", tcp_header.options_iterator().collect::<Vec<_>>());
+    // eprintln!("{:#?}", tcp_header.options_iterator().collect::<Vec<_>>());
+
+    stderr.flush().expect("could not flush stderr");
 }
 
-fn tcp_header_flags(header: &TcpHeader) {
+fn tcp_header_flags(header: &TcpHeader)
+{
     let mut flags = vec![];
     if header.ns {
         flags.push(NS.paint("NS"));
@@ -119,11 +127,11 @@ fn tcp_header_flags(header: &TcpHeader) {
     };
 
     if !flags.is_empty() {
-        print!("Flags: ");
+        eprint!("Flags: ");
         for f in flags {
-            print!("{} ", f);
+            eprint!("{} ", f);
         }
-        println!();
+        eprintln!();
     }
 }
 
@@ -148,7 +156,7 @@ fn tcp_header_binary(header: &TcpHeader) {
     let bin_checksum = format!("{:016b}", header.checksum);
     let bin_urgent_pointer = format!("{:016b}", header.urgent_pointer);
 
-    println!(
+    eprintln!(
         "{}{}\n{}\n{}\n{}{}{}{}{}{}{}{}{}{}{}{}\n{}{}",
         SRC_PORT.paint(bin_source_port),
         DST_PORT.paint(bin_destination_port),
@@ -172,9 +180,9 @@ fn tcp_header_binary(header: &TcpHeader) {
 
     for four_bytes in header.options().chunks(4) {
         for byte in four_bytes {
-            print!("{}", OPTIONS.paint(format!("{:08b}", byte)));
+            eprint!("{}", OPTIONS.paint(format!("{:08b}", byte)));
         }
-        println!();
+        eprintln!();
     }
 }
 
@@ -207,7 +215,7 @@ fn tcp_header_hex_line(header: &TcpHeader) {
         DATA_OFFSET.paint(&hex_data_offset),
         RESERVED.paint(&hex_reserved),
     ] {
-        print!("{} ", s);
+        eprint!("{} ", s);
     }
 
     for f in &[
@@ -221,22 +229,22 @@ fn tcp_header_hex_line(header: &TcpHeader) {
         SYN.paint(&hex_syn),
         FIN.paint(&hex_fin),
     ] {
-        print!("{}", f);
+        eprint!("{}", f);
     }
-    print!(" ");
+    eprint!(" ");
 
     for s in &[
         WINDOW.paint(&hex_window_size),
         CHECKSUM.paint(&hex_checksum),
         URGENT.paint(&hex_urgent_pointer),
     ] {
-        print!("{} ", s);
+        eprint!("{} ", s);
     }
 
     for o in header.options() {
-        print!("{}", OPTIONS.paint(format!("{:x}", o)));
+        eprint!("{}", OPTIONS.paint(format!("{:x}", o)));
     }
-    println!();
+    eprintln!();
 }
 
 pub enum Direction {
@@ -264,8 +272,8 @@ pub fn packet_overview(raw_packet: &[u8], direction: Direction) {
                         };
                         let inner_protocol =
                             ip_utils::get_next_protocol(ip_hdr);
-                        print!("{}\n", conn_id);
-                        println!(
+                        eprint!("{}\n", conn_id);
+                        eprintln!(
                             "protocol: {:?} - payload: {} bytes ",
                             inner_protocol,
                             packet.payload.len(),
@@ -276,8 +284,8 @@ pub fn packet_overview(raw_packet: &[u8], direction: Direction) {
                         let ip_pair = IpPair::from(ip_hdr);
                         let inner_protocol =
                             ip_utils::get_next_protocol(ip_hdr);
-                        print!("{}\n", ip_pair);
-                        println!(
+                        eprint!("{}\n", ip_pair);
+                        eprintln!(
                             "protocol: {:?} - payload: {} bytes ",
                             inner_protocol,
                             packet.payload.len(),
@@ -287,8 +295,8 @@ pub fn packet_overview(raw_packet: &[u8], direction: Direction) {
                 None => {
                     let ip_pair = IpPair::from(ip_hdr);
                     let inner_protocol = ip_utils::get_next_protocol(ip_hdr);
-                    print!("{}\n", ip_pair);
-                    println!(
+                    eprint!("{}\n", ip_pair);
+                    eprintln!(
                         "protocol: {:?} - payload: {} bytes ",
                         inner_protocol,
                         packet.payload.len(),
@@ -296,7 +304,7 @@ pub fn packet_overview(raw_packet: &[u8], direction: Direction) {
                 }
             },
             None => {
-                println!("Unknown packet");
+                eprintln!("Unknown packet");
             }
         },
     }

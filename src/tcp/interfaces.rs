@@ -3,60 +3,116 @@ use std::io;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
 
-use super::tcp::TcpCommand;
+use super::TcpResult;
+use super::{tcp::TcpCommand, ConnectionId};
 use crate::errors::{Result, TitError};
 
-pub(crate) type NewConnection =
-    (SocketAddr, crossbeam_channel::Receiver<Vec<u8>>);
+pub(crate) type NewConnection = ConnectionId;
 
 pub struct TcpListener {
-    /// Receiving pairs of remote [`SocketAddr`] and associated streams.
+    snd_tcp_cmd: crossbeam_channel::Sender<TcpCommand>,
+
     new_connections: crossbeam_channel::Receiver<NewConnection>,
 }
 
 impl TcpListener {
-    pub(crate) fn new(
-        new_connections: crossbeam_channel::Receiver<NewConnection>,
-    ) -> TcpListener {
-        TcpListener { new_connections }
-    }
-
     pub fn bind(
         addr: SocketAddr,
-        tcp_cmd_chan: &crossbeam_channel::Sender<TcpCommand>,
+        snd_tcp_cmd: &crossbeam_channel::Sender<TcpCommand>,
     ) -> Result<TcpListener> {
-        let (snd, rcv) = crossbeam_channel::bounded(1);
-        tcp_cmd_chan
+        let (snd_conn, rcv_conn) = crossbeam_channel::unbounded();
+        let (snd_ack, rcv_ack) = crossbeam_channel::bounded(1);
+        snd_tcp_cmd
             .send(TcpCommand::Listen {
                 socket: addr,
-                ack: snd,
+                ack: snd_ack,
+                snd_conn,
             })
             .map_err(|e| TitError::TcpCommandSendFailure(e.into()))?;
-        rcv.recv().expect("bind result channel closed")
+
+        rcv_ack
+            .recv()
+            .expect("bind result channel closed")
+            .map_err(|e| TitError::BindFailure(e))?;
+
+        Ok(TcpListener {
+            snd_tcp_cmd: snd_tcp_cmd.clone(),
+            new_connections: rcv_conn,
+        })
     }
 
     pub fn accept(&self) -> Result<(TcpStream, SocketAddr)> {
-        let (remote_socket, read) = self
+        let connection_id = self
             .new_connections
             .recv()
             .expect("pending connection channel not intact");
-        Ok((TcpStream { read }, remote_socket))
+        Ok((
+            TcpStream::new(connection_id, self.snd_tcp_cmd.clone()),
+            connection_id.remote_socket(),
+        ))
     }
 }
 // TODO: impl Drop for TcpListener
 
+pub type ReceiveResult = TcpResult<Vec<u8>>;
+
 pub struct TcpStream {
-    read: crossbeam_channel::Receiver<Vec<u8>>,
+    connection_id: ConnectionId,
+
+    snd_tcp_cmd: crossbeam_channel::Sender<TcpCommand>,
+    read_chan: (
+        crossbeam_channel::Sender<ReceiveResult>,
+        crossbeam_channel::Receiver<ReceiveResult>,
+    ),
     // TODO: sending stuff...
     // snd_chan: ??
 }
 // TODO: impl Drop for TcpStream
 
+impl TcpStream {
+    fn new(
+        connection_id: ConnectionId,
+        snd_tcp_cmd: crossbeam_channel::Sender<TcpCommand>,
+    ) -> TcpStream {
+        TcpStream {
+            snd_tcp_cmd,
+            connection_id,
+            read_chan: crossbeam_channel::bounded(1),
+        }
+    }
+}
+
 impl Read for TcpStream {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        &self.read;
-        // TODO:
-        Ok(0)
+    fn read(&mut self, mut buf: &mut [u8]) -> io::Result<usize> {
+        self.snd_tcp_cmd
+            .send(TcpCommand::Receive {
+                conn_id: self.connection_id,
+                buf_len: buf.len(),
+                snd_data: self.read_chan.0.clone(),
+            })
+            // Is this a sensible error to return?
+            .map_err(|e| io::Error::new(io::ErrorKind::BrokenPipe, e))?;
+
+        let data = self
+            .read_chan
+            .1
+            .recv()
+            .map_err(|e| io::Error::new(io::ErrorKind::BrokenPipe, e))?;
+
+        match data {
+            Ok(data) => {
+                assert!(data.len() < buf.len());
+
+                buf.write(&data)?;
+
+                Ok(data.len())
+            }
+
+            Err(_) => {
+                // That's it I guess, no more streams for us
+                Ok(0)
+            }
+        }
     }
 }
 

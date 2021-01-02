@@ -8,7 +8,8 @@ set -o nounset
 ip_addr=10.0.0.10
 port=4433
 
-nc -vz $ip_addr $port
+# nc -vz $ip_addr $port
+printf "GET / HTTP/1.0\r\n\r\n" | nc -vN $ip_addr $port
 
 printf "\n"
 

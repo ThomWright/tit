@@ -34,9 +34,9 @@ pub fn start_nic(tcp: tcp::IncomingPackets) -> Result<SendEthernetPacket> {
                 .recv()
                 .map_err(|e| TitError::OutgoingNetworkChannelClosed(e))?;
 
-            println!("SENDING");
+            eprintln!("SENDING");
             print::packet_overview(&packet[..len], Direction::Outgoing);
-            println!();
+            eprintln!();
 
             tun.send(&packet[..len])?;
 
@@ -71,9 +71,9 @@ pub fn start_nic(tcp: tcp::IncomingPackets) -> Result<SendEthernetPacket> {
 }
 
 fn handle_packet(tcp: &tcp::IncomingPackets, raw_packet: &[u8]) -> Result<()> {
-    println!("RECEIVED");
+    eprintln!("RECEIVED");
     print::packet_overview(&raw_packet, Direction::Incoming);
-    println!();
+    eprintln!();
 
     match etherparse::PacketHeaders::from_ip_slice(&raw_packet) {
         Err(error) => eprintln!("Error: {}", error),

@@ -1,3 +1,4 @@
+use std::io;
 use std::io::Read;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
@@ -17,7 +18,7 @@ fn main() -> Result<(), TitError> {
     // TODO: take CLI params to control active/passive open (similar to netcat)
 
     print_tcp_key();
-    println!();
+    eprintln!();
 
     let (tcp_impl, incoming_tcp_packets) = Tcp::new();
 
@@ -30,13 +31,20 @@ fn main() -> Result<(), TitError> {
 
         let listener = TcpListener::bind(listening_socket, &send_cmd)?;
 
-        let (mut stream, remote_socket) = listener.accept()?;
-        println!("{}", remote_socket);
+        let (mut stream, _remote_socket) = listener.accept()?;
 
         let mut read_buf = [0; 512];
         let len = stream.read(&mut read_buf)?;
-
-        println!("Data: {:#?}", &read_buf[..len]);
+        {
+            let stderr = io::stderr();
+            let _lock = stderr.lock();
+            eprintln!(
+                "Data: {:#?}",
+                std::str::from_utf8(&read_buf[..len])
+                    .expect("non UTF-8 string in data")
+            );
+            eprintln!();
+        }
     }
 
     std::thread::sleep(std::time::Duration::from_secs(1000));
