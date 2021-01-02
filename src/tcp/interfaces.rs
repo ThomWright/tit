@@ -25,7 +25,7 @@ impl TcpListener {
         addr: SocketAddr,
         tcp_cmd_chan: &crossbeam_channel::Sender<TcpCommand>,
     ) -> Result<TcpListener> {
-        let (snd, rcv) = crossbeam_channel::unbounded();
+        let (snd, rcv) = crossbeam_channel::bounded(1);
         tcp_cmd_chan
             .send(TcpCommand::Listen {
                 socket: addr,
