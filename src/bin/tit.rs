@@ -10,9 +10,9 @@ use tit::Tcp;
 use tit::TcpListener;
 use tit::TitError;
 
-const IP: Ipv4Addr = Ipv4Addr::UNSPECIFIED;
-// const IP: Ipv4Addr = Ipv4Addr::new(10, 0, 0, 10);
-const PORT: u16 = 4433;
+const LISTEN_ON_IP: Ipv4Addr = Ipv4Addr::UNSPECIFIED;
+// const LISTEN_ON_IP: Ipv4Addr = Ipv4Addr::new(10, 0, 0, 10);
+const LISTEN_ON_PORT: u16 = 4433;
 
 fn main() -> Result<(), TitError> {
     // TODO: take CLI params to control active/passive open (similar to netcat)
@@ -22,12 +22,12 @@ fn main() -> Result<(), TitError> {
 
     let (tcp_impl, incoming_tcp_packets) = Tcp::new();
 
-    let outgoing_network_packets = start_nic(incoming_tcp_packets)?;
+    let outgoing_tcp_packets = start_nic(incoming_tcp_packets)?;
 
-    let send_cmd = tcp_impl.start(outgoing_network_packets);
+    let send_cmd = tcp_impl.start(outgoing_tcp_packets);
 
     {
-        let listening_socket = SocketAddr::new(IpAddr::from(IP), PORT);
+        let listening_socket = SocketAddr::new(IpAddr::from(LISTEN_ON_IP), LISTEN_ON_PORT);
 
         let listener = TcpListener::bind(listening_socket, &send_cmd)?;
 

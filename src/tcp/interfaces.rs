@@ -117,7 +117,7 @@ impl Read for TcpStream {
 }
 
 impl Write for TcpStream {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+    fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
         // TODO:
         Ok(0)
     }
