@@ -10,7 +10,11 @@ use super::tcp::SeqGen;
 use super::types::*;
 use super::{connection_id::ConnectionId, TcpError};
 use super::{errors::TcpResult, ReceiveResult};
-use crate::{errors::Result, TitError};
+use crate::{
+    errors::Result,
+    nic::{EthernetPacket, SendEthernetPacket},
+    TitError,
+};
 
 const DATA_BUFFER_SIZE: usize = 2 << 15;
 
@@ -207,7 +211,7 @@ impl Connection {
             error: None,
             snd_una: iss,
             snd_nxt,
-            snd_max: snd_nxt,
+            snd_max: iss,
             snd_fin: None,
             snd_wnd: 1024,
             snd_wl1: 0,
@@ -221,6 +225,68 @@ impl Connection {
             inc_buf: ArrayDeque::new(),
             recv_req_q: vec![],
         }
+    }
+
+    pub fn handle_close(
+        &mut self,
+        snd_packet: &SendEthernetPacket,
+    ) -> Result<()> {
+        use State::*;
+        match self.state {
+            Listen => {
+                // Any outstanding RECEIVEs are returned with "error: closing"
+                // responses.  Delete TCB, enter CLOSED state, and return.
+
+                // nah
+            }
+            SynSent => {
+                // TODO:
+                // Delete the TCB and return "error: closing" responses to any
+                // queued SENDs, or RECEIVEs.
+                self.state = Closed;
+            }
+            SynReceived => {
+                // TODO:
+                // If no SENDs have been issued and there is no pending data to
+                // send, then form a FIN segment and send it, and enter FIN-WAIT-1
+                // state; otherwise queue for processing after entering
+                // ESTABLISHED state.
+
+                self.send_fin(&snd_packet)?;
+                self.state = State::FinWait1;
+            }
+            Established => {
+                // TODO:
+                // Queue this until all preceding SENDs have been segmentized,
+                // then form a FIN segment and send it.  In any case, enter FIN-
+                // WAIT-1 state.
+
+                self.send_fin(&snd_packet)?;
+                self.state = State::FinWait1;
+            }
+            FinWait1 | FinWait2 => {
+                // Strictly speaking, this is an error and should receive a
+                // "error: connection closing" response.  An "ok" response would
+                // be acceptable, too, as long as a second FIN is not emitted (the
+                // first FIN may be retransmitted though).
+            }
+            Closed => {}
+            CloseWait => {
+                // TODO:
+                // Queue this request until all preceding SENDs have been
+                // segmentized; then send a FIN segment, enter LAST-ACK state.
+
+                self.send_fin(&snd_packet)?;
+                self.state = State::LastAck;
+            }
+            Closing | LastAck | TimeWait => {
+                // Respond with "error: connection closing".
+
+                // nah
+            }
+        }
+
+        Ok(())
     }
 
     pub fn handle_receive(
@@ -447,7 +513,7 @@ impl Connection {
         // ((SND.UNA - MAX.SND.WND) =< SEG.ACK =< SND.NXT).
         // All incoming segments whose ACK value doesn't satisfy the above
         // condition MUST be discarded and an ACK sent back.
-        if !(self.acceptable_ack_rfc5961(&hdr)) {
+        if !(self.acceptable_ack_rfc5961(hdr)) {
             return self.send_ack(&mut res_buf);
         }
 
@@ -473,6 +539,7 @@ impl Connection {
                 // If the ACK acks something not yet sent (SEG.ACK > SND.NXT) then send an ACK,
                 // drop the segment, and return.
                 if wrapping_lt(self.snd_nxt, hdr.acknowledgment_number) {
+                    eprintln!("Unacceptable ACK - not yet sent");
                     return self.send_ack(&mut res_buf);
                 }
                 // If the ACK is a duplicate (SEG.ACK < SND.UNA), it can be ignored.
@@ -712,6 +779,37 @@ impl Connection {
         Ok(Some(res_len))
     }
 
+    pub fn send_fin(&mut self, snd_packet: &SendEthernetPacket) -> Result<()> {
+        self.snd_fin = Some(self.snd_nxt);
+
+        let packet = self
+            .create_packet_builder()
+            .tcp(
+                self.id.local_port(),
+                self.id.remote_port(),
+                self.snd_nxt,
+                self.snd_wnd,
+            )
+            .fin()
+            .ack(self.rcv_nxt);
+
+        self.snd_nxt = self.snd_nxt.wrapping_add(1);
+        self.snd_max = self.snd_max.wrapping_add(1);
+
+        let len = packet.size(0);
+
+        let mut buf: Box<EthernetPacket> = Box::new([0; 1500]);
+
+        // UGH
+        packet.write(&mut &mut buf[..], &[])?;
+
+        snd_packet
+            .send((buf, len))
+            .map_err(|e| TitError::NetworkPacketSendFailure(e))?;
+
+        Ok(())
+    }
+
     fn send_rst(
         &self,
         seq_num: LocalSeqNum,
@@ -847,7 +945,7 @@ impl Connection {
     /// Has our FIN been ACKed?
     fn fin_acked(&self) -> bool {
         self.snd_fin
-            .map_or(false, |fin_seq| self.snd_una == fin_seq)
+            .map_or(false, |fin_seq| self.snd_una == fin_seq.wrapping_add(1))
     }
 
     /// Should the connection state be deleted?

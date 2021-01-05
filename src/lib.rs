@@ -1,3 +1,5 @@
+#![warn(clippy::all)]
+
 mod errors;
 mod ip_utils;
 mod nic;

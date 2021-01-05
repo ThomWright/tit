@@ -50,9 +50,9 @@ pub enum TcpCommand {
         snd_data: crossbeam_channel::Sender<TcpResult<Vec<u8>>>,
         buf_len: usize,
     },
-    // Close,
-
-    // ?
+    Close {
+        conn_id: ConnectionId,
+    },
     // Abort
     // Status
 }
@@ -102,7 +102,7 @@ impl Tcp {
                     },
                     recv(rcv_cmd) -> cmd => {
                         let cmd = cmd.map_err(|e| TitError::TcpCommandReceiveFailure(e))?;
-                        self.receive_command(&cmd);
+                        self.receive_command(cmd, &send_packet);
                         Ok(())
                     },
                 }
@@ -116,7 +116,11 @@ impl Tcp {
         snd_cmd
     }
 
-    fn receive_command(&mut self, cmd: &TcpCommand) {
+    fn receive_command(
+        &mut self,
+        cmd: TcpCommand,
+        snd_packet: &SendEthernetPacket,
+    ) {
         use TcpCommand::*;
         match cmd {
             Listen {
@@ -124,7 +128,7 @@ impl Tcp {
                 ack,
                 snd_conn,
             } => {
-                let result = self.listen(*socket, snd_conn.clone());
+                let result = self.listen(socket, snd_conn);
                 ack.send(result).expect("listen result channel not open");
             }
             Receive {
@@ -132,23 +136,10 @@ impl Tcp {
                 snd_data,
                 buf_len,
             } => {
-                let conn = self.connections.get_mut(conn_id);
-                match conn {
-                    None => {
-                        snd_data
-                            .send(Err(TcpError::NoConnection.into()))
-                            .map_err(|e| {
-                                TitError::SendIncomingDataChannelClosed(
-                                    *conn_id, e,
-                                )
-                            })
-                            .expect("data channel should be open");
-                    }
-                    Some(conn) => {
-                        conn.handle_receive(snd_data.clone(), *buf_len)
-                            .expect("data channel should be open");
-                    }
-                };
+                self.handle_receive_cmd(conn_id, snd_data, buf_len);
+            }
+            Close { conn_id } => {
+                self.handle_close_cmd(conn_id, &snd_packet);
             }
         }
     }
@@ -163,6 +154,50 @@ impl Tcp {
             Entry::Vacant(entry) => {
                 entry.insert((socket, snd_conn));
                 Ok(())
+            }
+        }
+    }
+
+    fn handle_receive_cmd(
+        &mut self,
+        conn_id: ConnectionId,
+        snd_data: crossbeam_channel::Sender<TcpResult<Vec<u8>>>,
+        buf_len: usize,
+    ) {
+        let conn = self.connections.get_mut(&conn_id);
+        match conn {
+            None => {
+                snd_data
+                    .send(Err(TcpError::NoConnection.into()))
+                    .map_err(|e| {
+                        TitError::SendIncomingDataChannelClosed(conn_id, e)
+                    })
+                    .expect("data channel should be open");
+            }
+            Some(conn) => {
+                conn.handle_receive(snd_data.clone(), buf_len)
+                    .expect("data channel should be open");
+            }
+        };
+    }
+
+    fn handle_close_cmd(
+        &mut self,
+        conn_id: ConnectionId,
+        snd_packet: &SendEthernetPacket,
+    ) {
+        match self.connections.entry(conn_id) {
+            Entry::Vacant(_) => {}
+            Entry::Occupied(mut entry) => {
+                let conn = entry.get_mut();
+
+                conn.handle_close(snd_packet)
+                    .expect("error handling close on connection");
+
+                if conn.should_delete() {
+                    entry.remove();
+                    // TODO: flush any segment queues
+                }
             }
         }
     }

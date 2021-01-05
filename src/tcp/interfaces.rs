@@ -82,6 +82,15 @@ impl TcpStream {
     }
 }
 
+impl Drop for TcpStream {
+    fn drop(&mut self) {
+        // TODO: better error handling
+        let _ = self.snd_tcp_cmd.send(TcpCommand::Close {
+            conn_id: self.connection_id,
+        });
+    }
+}
+
 impl Read for TcpStream {
     fn read(&mut self, mut buf: &mut [u8]) -> io::Result<usize> {
         self.snd_tcp_cmd
