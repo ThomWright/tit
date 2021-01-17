@@ -36,6 +36,14 @@ impl TcpPacket {
 
 pub struct IncomingPackets(pub(crate) crossbeam_channel::Sender<TcpPacket>);
 
+/// I really don't know what to call this thing.
+///
+/// Despite the language the RFCs use, listening sockets aren't connections.
+pub enum SocketId {
+    ListeningSocket(PortNum),
+    Connection(ConnectionId),
+}
+
 pub enum TcpCommand {
     /// OPEN - open a passive socket
     Listen {
@@ -51,7 +59,8 @@ pub enum TcpCommand {
         buf_len: usize,
     },
     Close {
-        conn_id: ConnectionId,
+        socket_id: SocketId,
+        ack: crossbeam_channel::Sender<TcpResult<()>>,
     },
     // Abort
     // Status
@@ -138,8 +147,8 @@ impl Tcp {
             } => {
                 self.handle_receive_cmd(conn_id, snd_data, buf_len);
             }
-            Close { conn_id } => {
-                self.handle_close_cmd(conn_id, &snd_packet);
+            Close { socket_id, ack } => {
+                self.handle_close_cmd(socket_id, &snd_packet, ack);
             }
         }
     }
@@ -183,23 +192,33 @@ impl Tcp {
 
     fn handle_close_cmd(
         &mut self,
-        conn_id: ConnectionId,
+        socket_id: SocketId,
         snd_packet: &SendEthernetPacket,
+        ack: crossbeam_channel::Sender<TcpResult<()>>,
     ) {
-        match self.connections.entry(conn_id) {
-            Entry::Vacant(_) => {}
-            Entry::Occupied(mut entry) => {
-                let conn = entry.get_mut();
+        match socket_id {
+            SocketId::Connection(conn_id) => {
+                match self.connections.entry(conn_id) {
+                    Entry::Vacant(_) => {}
+                    Entry::Occupied(mut entry) => {
+                        let conn = entry.get_mut();
 
-                conn.handle_close(snd_packet)
-                    .expect("error handling close on connection");
+                        conn.handle_close(snd_packet)
+                            .expect("error handling close on connection");
 
-                if conn.should_delete() {
-                    entry.remove();
-                    // TODO: flush any segment queues
+                        if conn.should_delete() {
+                            entry.remove();
+                            // TODO: flush any segment queues
+                        }
+                    }
                 }
             }
+
+            SocketId::ListeningSocket(port) => {
+                self.listening_sockets.remove(&port);
+            }
         }
+        ack.send(Ok(())).expect("close result channel not open");
     }
 
     fn receive_segment(

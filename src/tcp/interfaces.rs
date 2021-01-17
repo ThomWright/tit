@@ -1,15 +1,18 @@
 use crossbeam_channel;
-use std::io;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
+use std::{io, time::Duration};
 
-use super::TcpResult;
-use super::{tcp::TcpCommand, ConnectionId};
+use super::tcp::SocketId;
+use super::types::PortNum;
+use super::{ConnectionId, TcpCommand, TcpResult};
 use crate::errors::{Result, TitError};
 
 pub(crate) type NewConnection = ConnectionId;
 
 pub struct TcpListener {
+    port: PortNum,
+
     snd_tcp_cmd: crossbeam_channel::Sender<TcpCommand>,
 
     new_connections: crossbeam_channel::Receiver<NewConnection>,
@@ -36,6 +39,7 @@ impl TcpListener {
             .map_err(|e| TitError::BindFailure(e))?;
 
         Ok(TcpListener {
+            port: addr.port(),
             snd_tcp_cmd: snd_tcp_cmd.clone(),
             new_connections: rcv_conn,
         })
@@ -52,7 +56,23 @@ impl TcpListener {
         ))
     }
 }
-// TODO: impl Drop for TcpListener
+
+impl Drop for TcpListener {
+    fn drop(&mut self) {
+        let (snd_ack, rcv_ack) = crossbeam_channel::bounded(1);
+
+        // TODO: better error handling
+        let _ = self.snd_tcp_cmd.send(TcpCommand::Close {
+            socket_id: SocketId::ListeningSocket(self.port),
+            ack: snd_ack,
+        });
+
+        let _ = rcv_ack
+            // TODO: again, not sure how best to handle not receiving an ack
+            .recv_timeout(Duration::from_secs(1))
+            .expect("close result channel closed");
+    }
+}
 
 pub type ReceiveResult = TcpResult<Vec<u8>>;
 
@@ -67,7 +87,6 @@ pub struct TcpStream {
     // TODO: sending stuff...
     // snd_chan: ??
 }
-// TODO: impl Drop for TcpStream
 
 impl TcpStream {
     fn new(
@@ -83,11 +102,20 @@ impl TcpStream {
 }
 
 impl Drop for TcpStream {
+    /// Close the connection.
     fn drop(&mut self) {
+        let (snd_ack, rcv_ack) = crossbeam_channel::bounded(1);
+
         // TODO: better error handling
         let _ = self.snd_tcp_cmd.send(TcpCommand::Close {
-            conn_id: self.connection_id,
+            socket_id: SocketId::Connection(self.connection_id),
+            ack: snd_ack,
         });
+
+        let _ = rcv_ack
+            // TODO: again, not sure how best to handle not receiving an ack
+            .recv_timeout(Duration::from_secs(1))
+            .expect("close result channel closed");
     }
 }
 
