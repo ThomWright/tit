@@ -9,14 +9,16 @@ Also inspired by wanting to print out TCP packets, to get a better feel for the 
 - [x] Basic printing of packets
 - [x] Passive open
 - [x] Basic state handling for arriving segments
-- [ ] User APIs: `TcpListener`, `TcpStream`
-- [ ] Closing connections
+- [x] User APIs: `TcpListener`, `TcpStream`
+- [x] Closing connections
+- [x] Receive data
+- [ ] Send data
 - [ ] Active open
 - [ ] Initial Sequence Number selection
 - [ ] Window management
-- [ ] Retransmission
+- [ ] Consolidate packets (e.g. single ACK for multiple incoming packets)
 - [ ] CLI options (listen, connect, printing options etc.)
-- [ ] Send/receive data
+- [ ] Retransmission
 - [ ] Improved packet printing
 - [ ] TCP Options
 - [ ] Remote address validation
